@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { syncShopifyData } from "@/lib/shopify";
+import { syncShopifyData, syncShopifyDataDirectCredentials } from "@/lib/shopify";
 
 export async function POST() {
   try {
@@ -14,8 +14,9 @@ export async function POST() {
       hasEnvToken: Boolean(process.env.SHOPIFY_ACCESS_TOKEN),
       connected: state?.connected ?? false,
     });
-    if (!token) {
-      throw new Error("No Shopify access token available. Use Connect Shopify first.");
+    const useDirectCredentials = !token;
+    if (useDirectCredentials) {
+      console.log("[shopify-sync] no OAuth/access token found, using direct credentials mode");
     }
 
     await prisma.integrationState.upsert({
@@ -23,21 +24,27 @@ export async function POST() {
       create: {
         provider: "shopify",
         connected: true,
-        accessToken: token,
+        accessToken: token ?? null,
         syncInProgress: true,
         lastSyncStatus: "in_progress",
-        lastSyncMessage: "Sync started",
+        lastSyncMessage: useDirectCredentials
+          ? "Sync started (direct credentials mode)"
+          : "Sync started",
       },
       update: {
         connected: true,
-        accessToken: token,
+        accessToken: token ?? undefined,
         syncInProgress: true,
         lastSyncStatus: "in_progress",
-        lastSyncMessage: "Sync started",
+        lastSyncMessage: useDirectCredentials
+          ? "Sync started (direct credentials mode)"
+          : "Sync started",
       },
     });
 
-    const result = await syncShopifyData(token);
+    const result = useDirectCredentials
+      ? await syncShopifyDataDirectCredentials()
+      : await syncShopifyData(token);
     console.log("[shopify-sync] sync completed", result);
 
     await prisma.integrationState.update({
@@ -46,7 +53,9 @@ export async function POST() {
         syncInProgress: false,
         lastSyncAt: new Date(),
         lastSyncStatus: "success",
-        lastSyncMessage: `Synced ${result.customersUpserted} customers, ${result.ordersUpserted} orders, ${result.productsUpserted} products`,
+        lastSyncMessage: `Synced ${result.customersUpserted} customers, ${result.ordersUpserted} orders, ${result.productsUpserted} products${
+          useDirectCredentials ? " (direct credentials mode)" : ""
+        }`,
       },
     });
 
@@ -57,7 +66,7 @@ export async function POST() {
         orders: result.ordersUpserted,
         products: result.productsUpserted,
       },
-      source: "shopify_sync",
+      source: useDirectCredentials ? "shopify_direct_credentials" : "shopify_sync",
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown sync error";

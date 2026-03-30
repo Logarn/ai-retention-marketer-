@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 
 export const DIRECT_SHOPIFY_GRAPHQL_ENDPOINT =
   "https://drrachaelinstitute.myshopify.com/admin/api/2024-01/graphql.json";
+export const DIRECT_SHOPIFY_REST_CUSTOMERS_ENDPOINT_TEMPLATE =
+  "https://{SHOPIFY_CLIENT_ID}:{SHOPIFY_CLIENT_SECRET}@drrachaelinstitute.myshopify.com/admin/api/2024-01/customers.json";
 
 function getStoreDomain() {
   // Defaults to the primary store used in this project if env is missing.
@@ -178,6 +180,47 @@ async function fetchAllFromShopifyRest(token: string): Promise<ShopifyRestPayloa
     image?: { src?: string };
     variants?: Array<{ sku?: string; price?: string }>;
   }>;
+
+  return { customers, orders, products };
+}
+
+async function fetchAllFromShopifyDirectCredentials(): Promise<ShopifyRestPayload> {
+  const store = process.env.SHOPIFY_STORE_NAME || "drrachaelinstitute";
+  const clientId = process.env.SHOPIFY_CLIENT_ID;
+  const clientSecret = process.env.SHOPIFY_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    throw new Error("Direct Shopify credentials missing (SHOPIFY_CLIENT_ID / SHOPIFY_CLIENT_SECRET).");
+  }
+
+  const encodedId = encodeURIComponent(clientId);
+  const encodedSecret = encodeURIComponent(clientSecret);
+  const base = `https://${encodedId}:${encodedSecret}@${store}.myshopify.com/admin/api/2024-01`;
+  console.log("[shopify] Starting direct credentials REST fetch", {
+    store,
+    endpointTemplate: DIRECT_SHOPIFY_REST_CUSTOMERS_ENDPOINT_TEMPLATE,
+  });
+
+  const [customersResp, ordersResp, productsResp] = await Promise.all([
+    fetch(`${base}/customers.json?limit=250`),
+    fetch(`${base}/orders.json?status=any&limit=250`),
+    fetch(`${base}/products.json?limit=250`),
+  ]);
+
+  if (!customersResp.ok || !ordersResp.ok || !productsResp.ok) {
+    const [customersText, ordersText, productsText] = await Promise.all([
+      customersResp.text(),
+      ordersResp.text(),
+      productsResp.text(),
+    ]);
+    throw new Error(
+      `Direct credentials REST fetch failed (customers=${customersResp.status}, orders=${ordersResp.status}, products=${productsResp.status}). ` +
+        `Details: customers=${customersText.slice(0, 220)} orders=${ordersText.slice(0, 220)} products=${productsText.slice(0, 220)}`,
+    );
+  }
+
+  const customers = ((await customersResp.json()) as { customers: unknown[] }).customers as ShopifyRestPayload["customers"];
+  const orders = ((await ordersResp.json()) as { orders: unknown[] }).orders as ShopifyRestPayload["orders"];
+  const products = ((await productsResp.json()) as { products: unknown[] }).products as ShopifyRestPayload["products"];
 
   return { customers, orders, products };
 }
@@ -381,17 +424,7 @@ async function fetchAllFromShopifyGraphql(token: string): Promise<ShopifyRestPay
   return { customers, orders, products };
 }
 
-export async function syncShopifyData(token: string): Promise<ShopifySyncResult> {
-  if (!token) throw new Error("Shopify access token is missing. Connect Shopify first.");
-
-  const data = await (async () => {
-    try {
-      return await fetchAllFromShopifyRest(token);
-    } catch (restError) {
-      console.warn("[shopify] REST sync fetch failed, trying GraphQL fallback", restError);
-      return await fetchAllFromShopifyGraphql(token);
-    }
-  })();
+async function persistShopifyData(data: ShopifyRestPayload): Promise<ShopifySyncResult> {
   const { customers, orders, products } = data;
   console.log("[shopify] Data fetched", {
     customers: customers.length,
@@ -571,4 +604,24 @@ export async function syncShopifyData(token: string): Promise<ShopifySyncResult>
   }
 
   return { customersUpserted, ordersUpserted, productsUpserted };
+}
+
+export async function syncShopifyData(token: string): Promise<ShopifySyncResult> {
+  if (!token) throw new Error("Shopify access token is missing. Connect Shopify first.");
+
+  const data = await (async () => {
+    try {
+      return await fetchAllFromShopifyRest(token);
+    } catch (restError) {
+      console.warn("[shopify] REST sync fetch failed, trying GraphQL fallback", restError);
+      return await fetchAllFromShopifyGraphql(token);
+    }
+  })();
+
+  return persistShopifyData(data);
+}
+
+export async function syncShopifyDataDirectCredentials(): Promise<ShopifySyncResult> {
+  const data = await fetchAllFromShopifyDirectCredentials();
+  return persistShopifyData(data);
 }

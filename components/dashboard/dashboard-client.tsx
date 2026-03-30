@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 import useSWR from "swr";
 import { AlertTriangle, DollarSign, RefreshCcw, Users, UserCheck, ShoppingBag } from "lucide-react";
@@ -157,59 +156,89 @@ export function DashboardClient() {
   const hasError = overviewError || rfmError || cohortsError || attributionError || productError;
   const integrationState = useSWR("/api/shopify/sync", fetcher);
 
-  async function runShopifySync() {
+  function extractApiError(payload: unknown, fallback: string) {
+    if (payload && typeof payload === "object") {
+      const maybe = payload as { error?: string; detail?: string };
+      if (maybe.error && maybe.detail) return `${maybe.error}: ${maybe.detail}`;
+      if (maybe.error) return maybe.error;
+      if (maybe.detail) return maybe.detail;
+    }
+    return fallback;
+  }
+
+  async function handleSyncShopify() {
+    console.log("[dashboard] Sync Shopify button clicked");
     setIntegrationMessage(null);
     setIsSyncingShopify(true);
     try {
-      console.log("[dashboard] Shopify sync triggered");
       const response = await fetch("/api/shopify/sync", { method: "POST" });
-      const json = await response.json();
+      const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
       console.log("[dashboard] Shopify sync response", json);
-      if (!response.ok) throw new Error(json.error || "Shopify sync failed");
+      if (!response.ok) {
+        throw new Error(extractApiError(json, "Shopify sync failed"));
+      }
       setIntegrationMessage(
-        `Shopify sync completed: ${json.summary?.customers ?? 0} customers, ${json.summary?.products ?? 0} products, ${json.summary?.orders ?? 0} orders`,
+        `Shopify sync completed: ${String((json.summary as Record<string, unknown> | undefined)?.customers ?? 0)} customers, ${String((json.summary as Record<string, unknown> | undefined)?.products ?? 0)} products, ${String((json.summary as Record<string, unknown> | undefined)?.orders ?? 0)} orders`,
       );
+      alert("Shopify sync successful!");
       await Promise.all([
         refreshOverview(),
         integrationState.mutate(),
       ]);
     } catch (error) {
-      setIntegrationMessage(error instanceof Error ? error.message : "Shopify sync failed");
+      const message = error instanceof Error ? error.message : "Shopify sync failed";
+      console.error("[dashboard] Shopify sync error", error);
+      setIntegrationMessage(message);
+      alert(`Shopify sync failed: ${message}`);
     } finally {
       setIsSyncingShopify(false);
     }
   }
 
-  function connectShopify() {
+  function handleConnectShopify() {
     console.log("[dashboard] Connect Shopify clicked");
     window.location.href = "/api/auth/shopify";
   }
 
-  async function runKlaviyoProfilesSync() {
+  async function handlePushToKlaviyo() {
+    console.log("[dashboard] Push to Klaviyo button clicked");
     setIntegrationMessage(null);
     setIsSyncingKlaviyoProfiles(true);
     try {
       const response = await fetch("/api/klaviyo/sync-profiles", { method: "POST" });
-      const json = await response.json();
-      if (!response.ok) throw new Error(json.error || "Klaviyo profile sync failed");
-      setIntegrationMessage(`Klaviyo profile sync completed: ${json.summary?.profilesSynced ?? 0} profiles synced`);
+      const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+      console.log("[dashboard] Push to Klaviyo response", json);
+      if (!response.ok) throw new Error(extractApiError(json, "Klaviyo profile sync failed"));
+      const message = `Klaviyo profile sync completed: ${String((json.summary as Record<string, unknown> | undefined)?.profilesSynced ?? 0)} profiles synced`;
+      setIntegrationMessage(message);
+      alert("Klaviyo profiles pushed successfully!");
     } catch (error) {
-      setIntegrationMessage(error instanceof Error ? error.message : "Klaviyo profile sync failed");
+      const message = error instanceof Error ? error.message : "Klaviyo profile sync failed";
+      console.error("[dashboard] Push to Klaviyo error", error);
+      setIntegrationMessage(message);
+      alert(`Push to Klaviyo failed: ${message}`);
     } finally {
       setIsSyncingKlaviyoProfiles(false);
     }
   }
 
-  async function runKlaviyoSegmentsSync() {
+  async function handleSyncSegments() {
+    console.log("[dashboard] Sync Segments button clicked");
     setIntegrationMessage(null);
     setIsSyncingKlaviyoSegments(true);
     try {
       const response = await fetch("/api/klaviyo/sync-segments", { method: "POST" });
-      const json = await response.json();
-      if (!response.ok) throw new Error(json.error || "Klaviyo segment sync failed");
-      setIntegrationMessage(`Klaviyo segment sync completed: ${json.summary?.segmentsSynced ?? 0} segments synced`);
+      const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+      console.log("[dashboard] Sync Segments response", json);
+      if (!response.ok) throw new Error(extractApiError(json, "Klaviyo segment sync failed"));
+      const message = `Klaviyo segment sync completed: ${String((json.summary as Record<string, unknown> | undefined)?.segmentsSynced ?? 0)} segments synced`;
+      setIntegrationMessage(message);
+      alert("Klaviyo segments synced successfully!");
     } catch (error) {
-      setIntegrationMessage(error instanceof Error ? error.message : "Klaviyo segment sync failed");
+      const message = error instanceof Error ? error.message : "Klaviyo segment sync failed";
+      console.error("[dashboard] Sync Segments error", error);
+      setIntegrationMessage(message);
+      alert(`Sync Segments failed: ${message}`);
     } finally {
       setIsSyncingKlaviyoSegments(false);
     }
@@ -225,23 +254,23 @@ export function DashboardClient() {
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <Button variant="outline" onClick={connectShopify} disabled={isSyncingShopify}>
+          <Button variant="outline" onClick={handleConnectShopify} disabled={isSyncingShopify}>
             {isSyncingShopify ? "Working..." : "Connect Shopify"}
           </Button>
-          <Button variant="outline" onClick={() => void runShopifySync()} disabled={isSyncingShopify}>
+          <Button variant="outline" onClick={() => void handleSyncShopify()} disabled={isSyncingShopify}>
             <RefreshCcw className="h-4 w-4" />
             {isSyncingShopify ? "Syncing Shopify..." : "Sync Now"}
           </Button>
           <Button
             variant="outline"
-            onClick={() => void runKlaviyoProfilesSync()}
+            onClick={() => void handlePushToKlaviyo()}
             disabled={isSyncingKlaviyoProfiles}
           >
             {isSyncingKlaviyoProfiles ? "Pushing Profiles..." : "Push to Klaviyo"}
           </Button>
           <Button
             variant="outline"
-            onClick={() => void runKlaviyoSegmentsSync()}
+            onClick={() => void handleSyncSegments()}
             disabled={isSyncingKlaviyoSegments}
           >
             {isSyncingKlaviyoSegments ? "Syncing Segments..." : "Sync Segments"}
