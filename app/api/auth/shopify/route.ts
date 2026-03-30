@@ -1,10 +1,14 @@
 import crypto from "crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { exchangeShopifyCodeForToken, getShopifyAuthUrl } from "@/lib/shopify";
+import { exchangeShopifyCodeForToken, getShopifyAuthUrlWithBase } from "@/lib/shopify";
 import { prisma } from "@/lib/prisma";
 
 function getBaseUrl(request: NextRequest) {
-  return process.env.NEXTAUTH_URL || `${request.nextUrl.protocol}//${request.nextUrl.host}`;
+  const configured = process.env.NEXTAUTH_URL;
+  if (configured) return configured;
+  // 0.0.0.0 is not a browser-reachable callback host for OAuth providers.
+  const host = request.nextUrl.host.replace(/^0\.0\.0\.0(?=:\d+|$)/, "localhost");
+  return `${request.nextUrl.protocol}//${host}`;
 }
 
 export async function GET(request: NextRequest) {
@@ -12,6 +16,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = request.nextUrl;
     const code = searchParams.get("code");
     const shop = searchParams.get("shop");
+    const baseUrl = getBaseUrl(request);
 
     if (!code || !shop) {
       const state = crypto.randomUUID();
@@ -20,11 +25,10 @@ export async function GET(request: NextRequest) {
         update: { accessToken: state, updatedAt: new Date() },
         create: { provider: "shopify_oauth_state", accessToken: state },
       });
-      const authUrl = `${getShopifyAuthUrl()}&state=${encodeURIComponent(state)}`;
+      const authUrl = getShopifyAuthUrlWithBase(baseUrl, state);
       return NextResponse.redirect(authUrl);
     }
 
-    const baseUrl = getBaseUrl(request);
     const storedState = await prisma.integrationState.findUnique({
       where: { provider: "shopify_oauth_state" },
     });

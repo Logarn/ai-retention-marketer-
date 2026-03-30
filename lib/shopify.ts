@@ -14,12 +14,17 @@ function normalizePhone(phone?: string | null) {
 }
 
 export function getShopifyAuthUrl() {
+  return getShopifyAuthUrlWithBase(process.env.NEXTAUTH_URL ?? "");
+}
+
+export function getShopifyAuthUrlWithBase(baseUrl: string, state?: string) {
   const shop = getStoreDomain();
   const clientId = process.env.SHOPIFY_CLIENT_ID;
   const scopes = ["read_customers", "read_orders", "read_products"].join(",");
-  const redirectUri = `${process.env.NEXTAUTH_URL}/api/auth/shopify`;
+  const normalizedBase = baseUrl.replace(/\/+$/, "");
+  const redirectUri = `${normalizedBase}/api/auth/shopify`;
   if (!clientId) throw new Error("SHOPIFY_CLIENT_ID is not configured.");
-  const nonce = crypto.randomUUID();
+  const nonce = state ?? crypto.randomUUID();
   return `https://${shop}/admin/oauth/authorize?client_id=${clientId}&scope=${encodeURIComponent(
     scopes,
   )}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${nonce}`;
