@@ -13,8 +13,8 @@ export default function EditCampaignPage({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Edit Campaign Flow</h1>
-        <p className="text-sm text-slate-500 mt-1">
+        <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">Edit Campaign Flow</h1>
+        <p className="mt-1 text-sm text-zinc-400">
           Campaign ID: <span className="font-mono">{id}</span>
         </p>
       </div>
@@ -23,15 +23,15 @@ export default function EditCampaignPage({
           <CardTitle>Flow Builder (Template Editor)</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <p className="text-sm text-slate-600">
+          <p className="text-sm text-zinc-300">
             Drag-and-drop flow editing can be layered on top of this data model. For now, select from pre-built
             templates and update node content via AI composer.
           </p>
           <div className="grid gap-3 md:grid-cols-2">
             {FLOW_TEMPLATES.map((template) => (
-              <div key={template.name} className="rounded border p-3">
-                <p className="text-sm font-medium">{template.name}</p>
-                <p className="text-xs text-slate-500">
+              <div key={template.name} className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+                <p className="text-sm font-medium text-zinc-100">{template.name}</p>
+                <p className="text-xs text-zinc-400">
                   {template.nodes.length} nodes · {template.edges.length} edges
                 </p>
               </div>

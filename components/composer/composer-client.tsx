@@ -144,8 +144,8 @@ export function ComposerClient() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">AI Message Composer</h1>
-        <p className="text-sm text-slate-500 mt-1">
+        <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">AI Message Composer</h1>
+        <p className="mt-1 text-sm text-zinc-400">
           Generate personalized retention copy with brand voice controls and variant testing.
         </p>
       </div>
@@ -156,14 +156,14 @@ export function ComposerClient() {
         </CardHeader>
         <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           <div>
-            <label className="text-sm text-slate-600 mb-1 block">Channel</label>
+            <label className="mb-1 block text-sm text-zinc-300">Channel</label>
             <Select value={channel} onChange={(e) => setChannel(e.target.value as "email" | "sms")}>
               <option value="email">Email</option>
               <option value="sms">SMS</option>
             </Select>
           </div>
           <div>
-            <label className="text-sm text-slate-600 mb-1 block">Campaign type</label>
+            <label className="mb-1 block text-sm text-zinc-300">Campaign type</label>
             <Select value={campaignType} onChange={(e) => setCampaignType(e.target.value)}>
               {campaignTypes.map((type) => (
                 <option key={type} value={type}>
@@ -173,7 +173,7 @@ export function ComposerClient() {
             </Select>
           </div>
           <div>
-            <label className="text-sm text-slate-600 mb-1 block">Tone</label>
+            <label className="mb-1 block text-sm text-zinc-300">Tone</label>
             <Select value={tone} onChange={(e) => setTone(e.target.value)}>
               {tones.map((t) => (
                 <option key={t} value={t}>
@@ -183,7 +183,7 @@ export function ComposerClient() {
             </Select>
           </div>
           <div className="md:col-span-2 xl:col-span-3">
-            <label className="text-sm text-slate-600 mb-1 block">Select customer (optional)</label>
+            <label className="mb-1 block text-sm text-zinc-300">Select customer (optional)</label>
             <Select value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
               <option value="">No selected customer</option>
               {customers.map((c) => (
@@ -194,11 +194,11 @@ export function ComposerClient() {
             </Select>
           </div>
           <div>
-            <label className="text-sm text-slate-600 mb-1 block">Name fallback</label>
+            <label className="mb-1 block text-sm text-zinc-300">Name fallback</label>
             <Input value={manualName} onChange={(e) => setManualName(e.target.value)} placeholder="Jane" />
           </div>
           <div>
-            <label className="text-sm text-slate-600 mb-1 block">Segment fallback</label>
+            <label className="mb-1 block text-sm text-zinc-300">Segment fallback</label>
             <Input
               value={manualSegment}
               onChange={(e) => setManualSegment(e.target.value)}
@@ -206,7 +206,7 @@ export function ComposerClient() {
             />
           </div>
           <div>
-            <label className="text-sm text-slate-600 mb-1 block">Recent views (comma-separated)</label>
+            <label className="mb-1 block text-sm text-zinc-300">Recent views (comma-separated)</label>
             <Input
               value={manualRecentViews}
               onChange={(e) => setManualRecentViews(e.target.value)}
@@ -214,9 +214,9 @@ export function ComposerClient() {
             />
           </div>
           <div className="md:col-span-2 xl:col-span-3">
-            <label className="text-sm text-slate-600 mb-1 block">Brand voice</label>
+            <label className="mb-1 block text-sm text-zinc-300">Brand voice</label>
             <textarea
-              className="min-h-24 w-full rounded-md border border-slate-200 p-3 text-sm"
+              className="textarea-base min-h-24"
               value={brandVoice}
               onChange={(e) => setBrandVoice(e.target.value)}
             />
@@ -225,8 +225,8 @@ export function ComposerClient() {
             <Button onClick={() => void generate()} disabled={loading}>
               {loading ? "Generating..." : "Generate 3 variants"}
             </Button>
-            {error && <p className="text-sm text-red-600">{error}</p>}
-            {saveMessage && <p className="text-sm text-slate-600">{saveMessage}</p>}
+            {error && <p className="text-sm text-red-300">{error}</p>}
+            {saveMessage && <p className="text-sm text-zinc-300">{saveMessage}</p>}
           </div>
         </CardContent>
       </Card>
@@ -246,7 +246,7 @@ export function ComposerClient() {
                   {"body" in variant ? (
                     <>
                       <div>
-                        <p className="text-xs text-slate-500">Subject</p>
+                        <p className="text-xs text-zinc-400">Subject</p>
                         <Input
                           value={variant.subject}
                           onChange={(e) => {
@@ -257,7 +257,7 @@ export function ComposerClient() {
                         />
                       </div>
                       <div>
-                        <p className="text-xs text-slate-500">Preview</p>
+                        <p className="text-xs text-zinc-400">Preview</p>
                         <Input
                           value={variant.preview}
                           onChange={(e) => {
@@ -268,9 +268,9 @@ export function ComposerClient() {
                         />
                       </div>
                       <div>
-                        <p className="text-xs text-slate-500">Body</p>
+                        <p className="text-xs text-zinc-400">Body</p>
                         <textarea
-                          className="min-h-36 w-full rounded-md border border-slate-200 p-3 text-sm"
+                          className="textarea-base min-h-36"
                           value={variant.body}
                           onChange={(e) => {
                             const clone = [...variants];
@@ -294,9 +294,9 @@ export function ComposerClient() {
                   ) : (
                     <>
                       <div>
-                        <p className="text-xs text-slate-500">Message</p>
+                        <p className="text-xs text-zinc-400">Message</p>
                         <textarea
-                          className="min-h-36 w-full rounded-md border border-slate-200 p-3 text-sm"
+                          className="textarea-base min-h-36"
                           value={variant.message}
                           onChange={(e) => {
                             const clone = [...variants];

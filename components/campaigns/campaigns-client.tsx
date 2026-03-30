@@ -38,7 +38,7 @@ export function CampaignsClient() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">Campaigns</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">Campaigns</h1>
         <Link href="/campaigns/new">
           <Button>Create campaign</Button>
         </Link>
@@ -63,10 +63,10 @@ export function CampaignsClient() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
-                <div className="text-slate-600">
+                <div className="text-zinc-400">
                   {campaign.type} · {campaign.channel}
                 </div>
-                <div className="text-slate-600">
+                <div className="text-zinc-400">
                   Sent: {campaign.metrics?.sent ?? 0} · Converted: {campaign.metrics?.converted ?? 0} · Revenue: $
                   {(campaign.metrics?.revenue ?? 0).toFixed(2)}
                 </div>

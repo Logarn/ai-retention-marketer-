@@ -29,19 +29,31 @@ export default function CustomerDetailPage({
         <>
           <Card>
             <CardHeader>
-              <CardTitle>
+              <CardTitle className="text-base text-zinc-100">
                 {customer.firstName} {customer.lastName}
               </CardTitle>
             </CardHeader>
-            <CardContent className="text-sm text-slate-600 grid gap-2 md:grid-cols-3">
-              <p>Email: {customer.email}</p>
-              <p>Total Orders: {customer.totalOrders}</p>
-              <p>Total Spent: ${customer.totalSpent?.toFixed?.(2) ?? "0.00"}</p>
+            <CardContent className="grid gap-2 text-sm text-zinc-300 md:grid-cols-3">
               <p>
-                Segment: <Badge variant="outline">{customer.segment || "unknown"}</Badge>
+                <span className="text-zinc-500">Email:</span> {customer.email}
               </p>
-              <p>Churn Risk: {customer.churnRiskScore ?? 0}</p>
-              <p>Last Order: {customer.lastOrderDate ? new Date(customer.lastOrderDate).toLocaleDateString() : "-"}</p>
+              <p>
+                <span className="text-zinc-500">Total Orders:</span> {customer.totalOrders}
+              </p>
+              <p>
+                <span className="text-zinc-500">Total Spent:</span> ${customer.totalSpent?.toFixed?.(2) ?? "0.00"}
+              </p>
+              <p>
+                <span className="text-zinc-500">Segment:</span>{" "}
+                <Badge variant="outline">{customer.segment || "unknown"}</Badge>
+              </p>
+              <p>
+                <span className="text-zinc-500">Churn Risk:</span> {customer.churnRiskScore ?? 0}
+              </p>
+              <p>
+                <span className="text-zinc-500">Last Order:</span>{" "}
+                {customer.lastOrderDate ? new Date(customer.lastOrderDate).toLocaleDateString() : "-"}
+              </p>
             </CardContent>
           </Card>
 
@@ -50,14 +62,19 @@ export default function CustomerDetailPage({
               <CardTitle>Recent Orders</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              {(customer.orders ?? []).slice(0, 20).map((order: { id: string; orderNumber: string; createdAt: string; totalAmount: number }) => (
-                <div key={order.id} className="rounded border px-3 py-2 text-sm flex justify-between">
-                  <span>{order.orderNumber}</span>
-                  <span>
-                    {new Date(order.createdAt).toLocaleDateString()} · ${order.totalAmount.toFixed(2)}
-                  </span>
-                </div>
-              ))}
+              {(customer.orders ?? []).slice(0, 20).map(
+                (order: { id: string; orderNumber: string; createdAt: string; totalAmount: number }) => (
+                  <div
+                    key={order.id}
+                    className="flex justify-between rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2 text-sm"
+                  >
+                    <span className="text-zinc-200">{order.orderNumber}</span>
+                    <span className="text-zinc-400">
+                      {new Date(order.createdAt).toLocaleDateString()} · ${order.totalAmount.toFixed(2)}
+                    </span>
+                  </div>
+                ),
+              )}
             </CardContent>
           </Card>
         </>
