@@ -13,6 +13,7 @@ function getBaseUrl(request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   try {
+    console.log("[shopify-oauth] Incoming request", { url: request.url });
     const { searchParams } = request.nextUrl;
     const code = searchParams.get("code");
     const shop = searchParams.get("shop");
@@ -20,12 +21,14 @@ export async function GET(request: NextRequest) {
 
     if (!code || !shop) {
       const state = crypto.randomUUID();
+      console.log("[shopify-oauth] Initiating OAuth", { baseUrl });
       await prisma.integrationState.upsert({
         where: { provider: "shopify_oauth_state" },
         update: { accessToken: state, updatedAt: new Date() },
         create: { provider: "shopify_oauth_state", accessToken: state },
       });
       const authUrl = getShopifyAuthUrlWithBase(baseUrl, state);
+      console.log("[shopify-oauth] Redirecting to Shopify", { authUrl });
       return NextResponse.redirect(authUrl);
     }
 
@@ -34,10 +37,15 @@ export async function GET(request: NextRequest) {
     });
     const stateFromQuery = searchParams.get("state");
     if (!stateFromQuery || stateFromQuery !== storedState?.accessToken) {
+      console.warn("[shopify-oauth] State mismatch", {
+        stateFromQuery,
+        storedState: storedState?.accessToken ? "present" : "missing",
+      });
       return NextResponse.redirect(new URL("/dashboard?shopify=state_mismatch", baseUrl));
     }
 
     const accessToken = await exchangeShopifyCodeForToken(code);
+    console.log("[shopify-oauth] Access token received", { shop });
     await prisma.integrationState.upsert({
       where: { provider: "shopify" },
       update: {

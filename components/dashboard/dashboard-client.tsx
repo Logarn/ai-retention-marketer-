@@ -161,8 +161,10 @@ export function DashboardClient() {
     setIntegrationMessage(null);
     setIsSyncingShopify(true);
     try {
+      console.log("[dashboard] Shopify sync triggered");
       const response = await fetch("/api/shopify/sync", { method: "POST" });
       const json = await response.json();
+      console.log("[dashboard] Shopify sync response", json);
       if (!response.ok) throw new Error(json.error || "Shopify sync failed");
       setIntegrationMessage(
         `Shopify sync completed: ${json.summary?.customers ?? 0} customers, ${json.summary?.products ?? 0} products, ${json.summary?.orders ?? 0} orders`,
@@ -176,6 +178,11 @@ export function DashboardClient() {
     } finally {
       setIsSyncingShopify(false);
     }
+  }
+
+  function connectShopify() {
+    console.log("[dashboard] Connect Shopify clicked");
+    window.location.href = "/api/auth/shopify";
   }
 
   async function runKlaviyoProfilesSync() {
@@ -218,9 +225,9 @@ export function DashboardClient() {
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <Link href="/api/auth/shopify">
-            <Button variant="outline">Connect Shopify</Button>
-          </Link>
+          <Button variant="outline" onClick={connectShopify} disabled={isSyncingShopify}>
+            {isSyncingShopify ? "Working..." : "Connect Shopify"}
+          </Button>
           <Button variant="outline" onClick={() => void runShopifySync()} disabled={isSyncingShopify}>
             <RefreshCcw className="h-4 w-4" />
             {isSyncingShopify ? "Syncing Shopify..." : "Sync Now"}

@@ -4,10 +4,16 @@ import { syncShopifyData } from "@/lib/shopify";
 
 export async function POST() {
   try {
+    console.log("[shopify-sync] POST /api/shopify/sync started");
     const state = await prisma.integrationState.findUnique({
       where: { provider: "shopify" },
     });
     const token = state?.accessToken || process.env.SHOPIFY_ACCESS_TOKEN;
+    console.log("[shopify-sync] token availability", {
+      hasStateToken: Boolean(state?.accessToken),
+      hasEnvToken: Boolean(process.env.SHOPIFY_ACCESS_TOKEN),
+      connected: state?.connected ?? false,
+    });
     if (!token) {
       throw new Error("No Shopify access token available. Use Connect Shopify first.");
     }
@@ -32,6 +38,7 @@ export async function POST() {
     });
 
     const result = await syncShopifyData(token);
+    console.log("[shopify-sync] sync completed", result);
 
     await prisma.integrationState.update({
       where: { provider: "shopify" },
@@ -50,9 +57,11 @@ export async function POST() {
         orders: result.ordersUpserted,
         products: result.productsUpserted,
       },
+      source: "shopify_sync",
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown sync error";
+    console.error("[shopify-sync] sync failed", error);
     await prisma.integrationState.upsert({
       where: { provider: "shopify" },
       create: {
@@ -68,7 +77,19 @@ export async function POST() {
         lastSyncMessage: message,
       },
     });
-    return NextResponse.json({ error: "Shopify sync failed", detail: message }, { status: 500 });
+    return NextResponse.json(
+      {
+        error: "Shopify sync failed",
+        detail: message,
+        debug: {
+          hasStore: Boolean(process.env.SHOPIFY_STORE_NAME),
+          hasClientId: Boolean(process.env.SHOPIFY_CLIENT_ID),
+          hasClientSecret: Boolean(process.env.SHOPIFY_CLIENT_SECRET),
+          hasAccessToken: Boolean(process.env.SHOPIFY_ACCESS_TOKEN),
+        },
+      },
+      { status: 500 },
+    );
   }
 }
 

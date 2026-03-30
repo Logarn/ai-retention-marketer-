@@ -2,10 +2,26 @@ import crypto from "crypto";
 import { ApiVersion } from "@shopify/shopify-api";
 import { prisma } from "@/lib/prisma";
 
+export const DIRECT_SHOPIFY_GRAPHQL_ENDPOINT =
+  "https://drrachaelinstitute.myshopify.com/admin/api/2024-01/graphql.json";
+
 function getStoreDomain() {
-  const store = process.env.SHOPIFY_STORE_NAME;
+  // Defaults to the primary store used in this project if env is missing.
+  const store = process.env.SHOPIFY_STORE_NAME || "drrachaelinstitute";
   if (!store) throw new Error("SHOPIFY_STORE_NAME is not configured.");
   return `${store}.myshopify.com`;
+}
+
+export function getShopifyConfigDebug() {
+  const storeName = process.env.SHOPIFY_STORE_NAME || "drrachaelinstitute";
+  const endpoint = `https://${storeName}.myshopify.com/admin/api/2024-01/graphql.json`;
+  return {
+    storeName,
+    endpoint,
+    hasClientId: Boolean(process.env.SHOPIFY_CLIENT_ID),
+    hasClientSecret: Boolean(process.env.SHOPIFY_CLIENT_SECRET),
+    hasAccessToken: Boolean(process.env.SHOPIFY_ACCESS_TOKEN),
+  };
 }
 
 function normalizePhone(phone?: string | null) {
@@ -58,9 +74,53 @@ type ShopifySyncResult = {
   productsUpserted: number;
 };
 
-async function fetchAllFromShopify(token: string) {
+type ShopifyRestPayload = {
+  customers: Array<{
+    id: number;
+    email?: string;
+    first_name?: string;
+    last_name?: string;
+    phone?: string;
+    created_at?: string;
+  }>;
+  orders: Array<{
+    id: number;
+    order_number: number;
+    email?: string;
+    customer?: { id?: number; email?: string };
+    total_price?: string;
+    financial_status?: string;
+    created_at?: string;
+    processed_at?: string;
+    line_items?: Array<{
+      id: number;
+      product_id?: number;
+      sku?: string;
+      quantity?: number;
+      price?: string;
+      title?: string;
+    }>;
+  }>;
+  products: Array<{
+    id: number;
+    title: string;
+    product_type?: string;
+    image?: { src?: string };
+    variants?: Array<{ sku?: string; price?: string }>;
+  }>;
+};
+
+function parseShopifyNumericId(rawId?: string | null): number {
+  if (!rawId) return 0;
+  const parsed = rawId.match(/\/(\d+)$/)?.[1] ?? rawId;
+  const asNumber = Number(parsed);
+  return Number.isFinite(asNumber) ? asNumber : 0;
+}
+
+async function fetchAllFromShopifyRest(token: string): Promise<ShopifyRestPayload> {
   const shop = getStoreDomain();
   const base = `https://${shop}/admin/api/${ApiVersion.July25}`;
+  console.log("[shopify] Starting REST sync fetch", { shop, base });
   const [customersResp, ordersResp, productsResp] = await Promise.all([
     fetch(`${base}/customers.json?limit=250`, {
       headers: { "X-Shopify-Access-Token": token },
@@ -74,7 +134,15 @@ async function fetchAllFromShopify(token: string) {
   ]);
 
   if (!customersResp.ok || !ordersResp.ok || !productsResp.ok) {
-    throw new Error("Failed to pull one or more Shopify resources.");
+    const [customersText, ordersText, productsText] = await Promise.all([
+      customersResp.text(),
+      ordersResp.text(),
+      productsResp.text(),
+    ]);
+    throw new Error(
+      `REST fetch failed (customers=${customersResp.status}, orders=${ordersResp.status}, products=${productsResp.status}). ` +
+        `Details: customers=${customersText.slice(0, 220)} orders=${ordersText.slice(0, 220)} products=${productsText.slice(0, 220)}`,
+    );
   }
 
   const customers = ((await customersResp.json()) as { customers: unknown[] }).customers as Array<{
@@ -114,10 +182,222 @@ async function fetchAllFromShopify(token: string) {
   return { customers, orders, products };
 }
 
+async function fetchAllFromShopifyGraphql(token: string): Promise<ShopifyRestPayload> {
+  const shop = getStoreDomain();
+  const endpoint = `https://${shop}/admin/api/2024-01/graphql.json`;
+  const query = `
+    query DirectSyncData {
+      customers(first: 250) {
+        edges {
+          node {
+            id
+            email
+            firstName
+            lastName
+            phone
+            createdAt
+          }
+        }
+      }
+      orders(first: 250, query: "status:any") {
+        edges {
+          node {
+            id
+            name
+            email
+            displayFinancialStatus
+            createdAt
+            processedAt
+            customer {
+              id
+              email
+            }
+            totalPriceSet {
+              shopMoney {
+                amount
+              }
+            }
+            lineItems(first: 100) {
+              edges {
+                node {
+                  id
+                  title
+                  quantity
+                  sku
+                  originalUnitPriceSet {
+                    shopMoney {
+                      amount
+                    }
+                  }
+                  variant {
+                    product {
+                      id
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      products(first: 250) {
+        edges {
+          node {
+            id
+            title
+            productType
+            featuredImage {
+              url
+            }
+            variants(first: 20) {
+              edges {
+                node {
+                  sku
+                  price
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  console.log("[shopify] Starting GraphQL fallback fetch", { shop, endpoint });
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": token,
+    },
+    body: JSON.stringify({ query }),
+  });
+
+  const payload = (await response.json()) as {
+    errors?: Array<{ message?: string }>;
+    data?: {
+      customers?: { edges?: Array<{ node?: Record<string, unknown> }> };
+      orders?: { edges?: Array<{ node?: Record<string, unknown> }> };
+      products?: { edges?: Array<{ node?: Record<string, unknown> }> };
+    };
+  };
+
+  if (!response.ok || payload.errors?.length) {
+    throw new Error(
+      `GraphQL fetch failed (${response.status}): ${JSON.stringify(payload.errors || payload).slice(0, 380)}`,
+    );
+  }
+
+  const customers = (payload.data?.customers?.edges ?? []).map((edge) => {
+    const node = edge.node as {
+      id?: string;
+      email?: string;
+      firstName?: string;
+      lastName?: string;
+      phone?: string;
+      createdAt?: string;
+    };
+    return {
+      id: parseShopifyNumericId(node.id),
+      email: node.email,
+      first_name: node.firstName,
+      last_name: node.lastName,
+      phone: node.phone,
+      created_at: node.createdAt,
+    };
+  });
+
+  const products = (payload.data?.products?.edges ?? []).map((edge) => {
+    const node = edge.node as {
+      id?: string;
+      title?: string;
+      productType?: string;
+      featuredImage?: { url?: string };
+      variants?: { edges?: Array<{ node?: { sku?: string; price?: string } }> };
+    };
+    return {
+      id: parseShopifyNumericId(node.id),
+      title: node.title || "Untitled Product",
+      product_type: node.productType,
+      image: { src: node.featuredImage?.url },
+      variants: (node.variants?.edges ?? []).map((variantEdge) => ({
+        sku: variantEdge.node?.sku,
+        price: variantEdge.node?.price,
+      })),
+    };
+  });
+
+  const orders = (payload.data?.orders?.edges ?? []).map((edge, index) => {
+    const node = edge.node as {
+      id?: string;
+      name?: string;
+      email?: string;
+      displayFinancialStatus?: string;
+      createdAt?: string;
+      processedAt?: string;
+      customer?: { id?: string; email?: string };
+      totalPriceSet?: { shopMoney?: { amount?: string } };
+      lineItems?: {
+        edges?: Array<{
+          node?: {
+            id?: string;
+            title?: string;
+            quantity?: number;
+            sku?: string;
+            originalUnitPriceSet?: { shopMoney?: { amount?: string } };
+            variant?: { product?: { id?: string } };
+          };
+        }>;
+      };
+    };
+
+    const orderNumberFromName = Number(node.name?.replace(/[^0-9]/g, "") || 0);
+    return {
+      id: parseShopifyNumericId(node.id),
+      order_number:
+        Number.isFinite(orderNumberFromName) && orderNumberFromName > 0
+          ? orderNumberFromName
+          : index + 1,
+      email: node.email,
+      customer: {
+        id: parseShopifyNumericId(node.customer?.id),
+        email: node.customer?.email,
+      },
+      total_price: node.totalPriceSet?.shopMoney?.amount,
+      financial_status: node.displayFinancialStatus,
+      created_at: node.createdAt,
+      processed_at: node.processedAt,
+      line_items: (node.lineItems?.edges ?? []).map((lineEdge) => ({
+        id: parseShopifyNumericId(lineEdge.node?.id),
+        product_id: parseShopifyNumericId(lineEdge.node?.variant?.product?.id) || undefined,
+        sku: lineEdge.node?.sku,
+        quantity: lineEdge.node?.quantity,
+        price: lineEdge.node?.originalUnitPriceSet?.shopMoney?.amount,
+        title: lineEdge.node?.title,
+      })),
+    };
+  });
+
+  return { customers, orders, products };
+}
+
 export async function syncShopifyData(token: string): Promise<ShopifySyncResult> {
   if (!token) throw new Error("Shopify access token is missing. Connect Shopify first.");
 
-  const { customers, orders, products } = await fetchAllFromShopify(token);
+  const data = await (async () => {
+    try {
+      return await fetchAllFromShopifyRest(token);
+    } catch (restError) {
+      console.warn("[shopify] REST sync fetch failed, trying GraphQL fallback", restError);
+      return await fetchAllFromShopifyGraphql(token);
+    }
+  })();
+  const { customers, orders, products } = data;
+  console.log("[shopify] Data fetched", {
+    customers: customers.length,
+    orders: orders.length,
+    products: products.length,
+  });
 
   let customersUpserted = 0;
   let productsUpserted = 0;
