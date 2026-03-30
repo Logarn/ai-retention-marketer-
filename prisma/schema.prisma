@@ -1,0 +1,137 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Customer {
+  id               String            @id @default(cuid())
+  email            String            @unique
+  phone            String?
+  firstName        String?
+  lastName         String?
+  createdAt        DateTime          @default(now())
+  totalOrders      Int               @default(0)
+  totalSpent       Float             @default(0)
+  avgOrderValue    Float             @default(0)
+  lastOrderDate    DateTime?
+  firstOrderDate   DateTime?
+  recencyScore     Int?
+  frequencyScore   Int?
+  monetaryScore    Int?
+  segment          String?
+  churnRiskScore   Int?
+  orders           Order[]
+  events           CustomerEvent[]
+  campaignReceipts CampaignReceipt[]
+}
+
+model Order {
+  id          String    @id @default(cuid())
+  customerId  String
+  customer    Customer  @relation(fields: [customerId], references: [id])
+  orderNumber String
+  totalAmount Float
+  status      String
+  createdAt   DateTime  @default(now())
+  deliveredAt DateTime?
+  items       OrderItem[]
+
+  @@index([customerId, createdAt])
+}
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+  quantity  Int
+  price     Float
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+model Product {
+  id                   String      @id @default(cuid())
+  name                 String
+  sku                  String      @unique
+  price                Float
+  category             String?
+  imageUrl             String?
+  avgReplenishmentDays Int?
+  orderItems           OrderItem[]
+}
+
+model CustomerEvent {
+  id         String   @id @default(cuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  eventType  String
+  properties Json?
+  createdAt  DateTime @default(now())
+
+  @@index([customerId, createdAt])
+  @@index([eventType, createdAt])
+}
+
+model Campaign {
+  id          String            @id @default(cuid())
+  name        String
+  type        String
+  channel     String
+  status      String
+  createdAt   DateTime          @default(now())
+  flowConfig  Json?
+  subject     String?
+  body        String?
+  scheduledAt DateTime?
+  sentAt      DateTime?
+  receipts    CampaignReceipt[]
+  metrics     CampaignMetrics?
+}
+
+model CampaignReceipt {
+  id          String    @id @default(cuid())
+  campaignId  String
+  campaign    Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  customerId  String
+  customer    Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  channel     String
+  status      String
+  sentAt      DateTime?
+  openedAt    DateTime?
+  clickedAt   DateTime?
+  convertedAt DateTime?
+  revenue     Float?
+
+  @@index([campaignId, status])
+  @@index([customerId])
+}
+
+model CampaignMetrics {
+  id           String   @id @default(cuid())
+  campaignId   String   @unique
+  campaign     Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  sent         Int      @default(0)
+  delivered    Int      @default(0)
+  opened       Int      @default(0)
+  clicked      Int      @default(0)
+  converted    Int      @default(0)
+  revenue      Float    @default(0)
+  unsubscribed Int      @default(0)
+  updatedAt    DateTime @updatedAt
+}
+
+model MessageTemplate {
+  id        String   @id @default(cuid())
+  name      String
+  channel   String
+  type      String
+  subject   String?
+  body      String
+  createdAt DateTime @default(now())
+}

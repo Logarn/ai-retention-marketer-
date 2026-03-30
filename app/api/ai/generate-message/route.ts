@@ -1,0 +1,117 @@
+import { NextResponse } from "next/server";
+import { z } from "zod";
+import { anthropicClient, CLAUDE_MODEL } from "@/lib/ai";
+
+const payloadSchema = z.object({
+  channel: z.enum(["email", "sms"]),
+  campaignType: z.string().min(1),
+  tone: z.string().min(1),
+  customerContext: z.object({
+    name: z.string().optional().nullable(),
+    segment: z.string().optional().nullable(),
+    lastPurchaseDate: z.string().optional().nullable(),
+    lastProduct: z.string().optional().nullable(),
+    orderCount: z.number().optional().nullable(),
+    clv: z.number().optional().nullable(),
+    recentViews: z.array(z.string()).optional().nullable(),
+  }),
+  brandVoice: z.string().min(1),
+});
+
+function buildFallbackVariants(input: z.infer<typeof payloadSchema>) {
+  const name = input.customerContext.name ?? "there";
+  if (input.channel === "email") {
+    return [
+      {
+        subject: `A quick update for you, ${name}`,
+        preview: "A personalized pick we think you'll love.",
+        body: `Hi ${name},\n\nWe've put together a ${input.campaignType.replaceAll("_", " ")} message with a ${input.tone.toLowerCase()} tone for your segment (${input.customerContext.segment ?? "customer"}).\n\nCTA: Shop now and unlock your offer.`,
+      },
+      {
+        subject: `Your next favorite is waiting`,
+        preview: "Tailored for your recent shopping behavior.",
+        body: `Hey ${name},\n\nBased on your recent activity, we selected products you'll likely love next. This message is aligned with your brand voice (${input.brandVoice.slice(0, 80)}...).\n\nCTA: Explore recommendations now.`,
+      },
+      {
+        subject: `A special offer just for you`,
+        preview: "Limited-time incentive for your next order.",
+        body: `Hi ${name},\n\nYou're one of our valued customers and we'd love to welcome you back with a personalized offer.\n\nCTA: Redeem your offer today.`,
+      },
+    ];
+  }
+  return [
+    { message: `Hi ${name}, your personalized offer is live. Tap to shop now: {{link}}` },
+    { message: `${name}, we picked something you'll love. See your recommendations: {{link}}` },
+    { message: `Limited-time ${input.campaignType.replaceAll("_", " ")} deal for you, ${name}: {{link}}` },
+  ];
+}
+
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+    const parsed = payloadSchema.parse(body);
+    const prompt = `You are an expert e-commerce retention marketer. Generate a ${parsed.channel} message for a ${parsed.campaignType} campaign.
+
+Customer context:
+- Name: ${parsed.customerContext.name ?? "Unknown"}
+- Segment: ${parsed.customerContext.segment ?? "Unknown"}
+- Last purchase: ${parsed.customerContext.lastPurchaseDate ?? "Unknown"} — ${parsed.customerContext.lastProduct ?? "Unknown"}
+- Total orders: ${parsed.customerContext.orderCount ?? 0}
+- Lifetime value: ${parsed.customerContext.clv ?? 0}
+- Browsing history: ${(parsed.customerContext.recentViews ?? []).join(", ") || "None"}
+
+Brand voice: ${parsed.brandVoice}
+
+Tone: ${parsed.tone}
+
+Requirements:
+- For EMAIL: Generate subject line (max 50 chars), preview text (max 90 chars), and body (max 200 words)
+- For SMS: Generate message (max 160 chars including CTA link placeholder)
+- Include personalization using customer context
+- Include clear CTA
+- Generate exactly 3 variants for A/B testing
+- Return STRICT JSON only with this shape:
+{
+  "variants": [
+    { "subject": "...", "preview": "...", "body": "..." },
+    { "subject": "...", "preview": "...", "body": "..." },
+    { "subject": "...", "preview": "...", "body": "..." }
+  ]
+}
+For SMS variant objects should be: { "message": "..." }`;
+
+    if (!anthropicClient) {
+      return NextResponse.json(
+        {
+          variants: buildFallbackVariants(parsed),
+          source: "mock",
+          note: "ANTHROPIC_API_KEY not set, returned mocked variants.",
+        },
+        { status: 200 },
+      );
+    }
+
+    const completion = await anthropicClient.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 1200,
+      temperature: 0.8,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const text = completion.content
+      .map((part) => ("text" in part ? part.text : ""))
+      .join("")
+      .trim();
+
+    const parsedJson = JSON.parse(text);
+    return NextResponse.json({ ...parsedJson, source: "anthropic" });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error: "Failed to generate message variants",
+        details: error instanceof Error ? error.message : "Unknown error",
+      },
+      { status: 500 },
+    );
+  }
+}
