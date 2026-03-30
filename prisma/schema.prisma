@@ -8,6 +8,7 @@ datasource db {
 
 model Customer {
   id               String            @id @default(cuid())
+  externalId       String?           @unique
   email            String            @unique
   phone            String?
   firstName        String?
@@ -30,6 +31,7 @@ model Customer {
 
 model Order {
   id          String    @id @default(cuid())
+  externalId  String?   @unique
   customerId  String
   customer    Customer  @relation(fields: [customerId], references: [id])
   orderNumber String
@@ -57,6 +59,7 @@ model OrderItem {
 
 model Product {
   id                   String      @id @default(cuid())
+  externalId           String?     @unique
   name                 String
   sku                  String      @unique
   price                Float
@@ -134,4 +137,19 @@ model MessageTemplate {
   subject   String?
   body      String
   createdAt DateTime @default(now())
+}
+
+model IntegrationState {
+  id                 String   @id @default(cuid())
+  provider           String   @unique
+  connected          Boolean  @default(false)
+  accessToken        String?
+  refreshToken       String?
+  tokenExpiresAt     DateTime?
+  lastSyncAt         DateTime?
+  lastSyncStatus     String?
+  lastSyncMessage    String?
+  syncInProgress     Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 }

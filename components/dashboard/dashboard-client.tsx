@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import { useState } from "react";
 import useSWR from "swr";
 import { AlertTriangle, DollarSign, RefreshCcw, Users, UserCheck, ShoppingBag } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -124,6 +126,11 @@ function CohortHeatCell({ value }: { value: number }) {
 }
 
 export function DashboardClient() {
+  const [isSyncingShopify, setIsSyncingShopify] = useState(false);
+  const [isSyncingKlaviyoProfiles, setIsSyncingKlaviyoProfiles] = useState(false);
+  const [isSyncingKlaviyoSegments, setIsSyncingKlaviyoSegments] = useState(false);
+  const [integrationMessage, setIntegrationMessage] = useState<string | null>(null);
+
   const {
     data: overview,
     error: overviewError,
@@ -148,6 +155,58 @@ export function DashboardClient() {
   );
 
   const hasError = overviewError || rfmError || cohortsError || attributionError || productError;
+  const integrationState = useSWR("/api/shopify/sync", fetcher);
+
+  async function runShopifySync() {
+    setIntegrationMessage(null);
+    setIsSyncingShopify(true);
+    try {
+      const response = await fetch("/api/shopify/sync", { method: "POST" });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json.error || "Shopify sync failed");
+      setIntegrationMessage(
+        `Shopify sync completed: ${json.summary?.customers ?? 0} customers, ${json.summary?.products ?? 0} products, ${json.summary?.orders ?? 0} orders`,
+      );
+      await Promise.all([
+        refreshOverview(),
+        integrationState.mutate(),
+      ]);
+    } catch (error) {
+      setIntegrationMessage(error instanceof Error ? error.message : "Shopify sync failed");
+    } finally {
+      setIsSyncingShopify(false);
+    }
+  }
+
+  async function runKlaviyoProfilesSync() {
+    setIntegrationMessage(null);
+    setIsSyncingKlaviyoProfiles(true);
+    try {
+      const response = await fetch("/api/klaviyo/sync-profiles", { method: "POST" });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json.error || "Klaviyo profile sync failed");
+      setIntegrationMessage(`Klaviyo profile sync completed: ${json.summary?.profilesSynced ?? 0} profiles synced`);
+    } catch (error) {
+      setIntegrationMessage(error instanceof Error ? error.message : "Klaviyo profile sync failed");
+    } finally {
+      setIsSyncingKlaviyoProfiles(false);
+    }
+  }
+
+  async function runKlaviyoSegmentsSync() {
+    setIntegrationMessage(null);
+    setIsSyncingKlaviyoSegments(true);
+    try {
+      const response = await fetch("/api/klaviyo/sync-segments", { method: "POST" });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json.error || "Klaviyo segment sync failed");
+      setIntegrationMessage(`Klaviyo segment sync completed: ${json.summary?.segmentsSynced ?? 0} segments synced`);
+    } catch (error) {
+      setIntegrationMessage(error instanceof Error ? error.message : "Klaviyo segment sync failed");
+    } finally {
+      setIsSyncingKlaviyoSegments(false);
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -158,11 +217,55 @@ export function DashboardClient() {
             Story-first retention analytics to drive repeat purchase growth.
           </p>
         </div>
-        <Button variant="outline" onClick={() => void refreshOverview()}>
-          <RefreshCcw className="h-4 w-4" />
-          Refresh metrics
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Link href="/api/auth/shopify">
+            <Button variant="outline">Connect Shopify</Button>
+          </Link>
+          <Button variant="outline" onClick={() => void runShopifySync()} disabled={isSyncingShopify}>
+            <RefreshCcw className="h-4 w-4" />
+            {isSyncingShopify ? "Syncing Shopify..." : "Sync Now"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => void runKlaviyoProfilesSync()}
+            disabled={isSyncingKlaviyoProfiles}
+          >
+            {isSyncingKlaviyoProfiles ? "Pushing Profiles..." : "Push to Klaviyo"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => void runKlaviyoSegmentsSync()}
+            disabled={isSyncingKlaviyoSegments}
+          >
+            {isSyncingKlaviyoSegments ? "Syncing Segments..." : "Sync Segments"}
+          </Button>
+          <Button variant="outline" onClick={() => void refreshOverview()}>
+            <RefreshCcw className="h-4 w-4" />
+            Refresh metrics
+          </Button>
+        </div>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Integration Status</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2 text-sm">
+          <p>
+            Last Shopify sync:{" "}
+            {integrationState.data?.lastSyncAt
+              ? new Date(integrationState.data.lastSyncAt).toLocaleString()
+              : "Not synced yet"}
+          </p>
+          <p>
+            Current status:{" "}
+            <Badge variant={integrationState.data?.status === "ok" ? "success" : "outline"}>
+              {integrationState.data?.status ?? "idle"}
+            </Badge>
+          </p>
+          {integrationMessage ? <p className="text-slate-600">{integrationMessage}</p> : null}
+        </CardContent>
+      </Card>
 
       {hasError && (
         <Card className="border-red-200 bg-red-50">
