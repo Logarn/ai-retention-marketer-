@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 const createCampaignSchema = z.object({
@@ -32,18 +31,18 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const payload = createCampaignSchema.parse(await request.json());
-    const flowConfig = payload.flowConfig as Prisma.InputJsonValue | undefined;
+    const campaignData = {
+      name: payload.name,
+      type: payload.type,
+      channel: payload.channel,
+      status: payload.status,
+      subject: payload.subject,
+      body: payload.body,
+      scheduledAt: payload.scheduledAt ? new Date(payload.scheduledAt) : null,
+      ...(payload.flowConfig ? { flowConfig: payload.flowConfig } : {}),
+    } as Parameters<typeof prisma.campaign.create>[0]["data"];
     const campaign = await prisma.campaign.create({
-      data: {
-        name: payload.name,
-        type: payload.type,
-        channel: payload.channel,
-        status: payload.status,
-        subject: payload.subject,
-        body: payload.body,
-        scheduledAt: payload.scheduledAt ? new Date(payload.scheduledAt) : null,
-        flowConfig,
-      },
+      data: campaignData,
     });
     return NextResponse.json(campaign, { status: 201 });
   } catch (error) {

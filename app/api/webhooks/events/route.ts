@@ -1,4 +1,3 @@
-import type { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
@@ -25,14 +24,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "customerId or known email is required" }, { status: 400 });
     }
 
-    const properties = (payload.properties ?? {}) as Prisma.InputJsonValue;
+    const data = {
+      customerId,
+      eventType: payload.eventType,
+      properties: payload.properties ?? {},
+      createdAt: payload.createdAt ? new Date(payload.createdAt) : undefined,
+    } as Parameters<typeof prisma.customerEvent.create>[0]["data"];
     const created = await prisma.customerEvent.create({
-      data: {
-        customerId,
-        eventType: payload.eventType,
-        properties,
-        createdAt: payload.createdAt ? new Date(payload.createdAt) : undefined,
-      },
+      data,
     });
 
     return NextResponse.json({ event: created }, { status: 201 });

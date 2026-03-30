@@ -6,7 +6,6 @@ import {
   subDays,
   subMonths,
 } from "date-fns";
-import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSegmentMeta } from "@/lib/constants";
 import { assignSegment, calculateChurnRisk, quantileScore } from "@/lib/segment";
@@ -44,7 +43,7 @@ export async function computeAndPersistCustomerScores() {
   const frequencyCandidates = customers.map((c) => c.totalOrders || 0);
   const monetaryCandidates = customers.map((c) => c.totalSpent || 0);
 
-  const updates: Prisma.PrismaPromise<unknown>[] = [];
+  const updates: ReturnType<typeof prisma.customer.update>[] = [];
 
   for (const customer of customers) {
     const lastOrderDate = customer.lastOrderDate;
