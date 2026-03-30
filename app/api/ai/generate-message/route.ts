@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { anthropicClient, CLAUDE_MODEL } from "@/lib/ai";
+import { groqClient, GROQ_MODEL } from "@/lib/ai";
 
 const payloadSchema = z.object({
   channel: z.enum(["email", "sms"]),
@@ -80,31 +80,28 @@ Requirements:
 }
 For SMS variant objects should be: { "message": "..." }`;
 
-    if (!anthropicClient) {
+    if (!groqClient) {
       return NextResponse.json(
         {
           variants: buildFallbackVariants(parsed),
           source: "mock",
-          note: "ANTHROPIC_API_KEY not set, returned mocked variants.",
+          note: "GROQ_API_KEY not set, returned mocked variants.",
         },
         { status: 200 },
       );
     }
 
-    const completion = await anthropicClient.messages.create({
-      model: CLAUDE_MODEL,
+    const completion = await groqClient.chat.completions.create({
+      model: GROQ_MODEL,
       max_tokens: 1200,
       temperature: 0.8,
       messages: [{ role: "user", content: prompt }],
     });
 
-    const text = completion.content
-      .map((part) => ("text" in part ? part.text : ""))
-      .join("")
-      .trim();
+    const text = completion.choices[0]?.message?.content?.trim() ?? "";
 
     const parsedJson = JSON.parse(text);
-    return NextResponse.json({ ...parsedJson, source: "anthropic" });
+    return NextResponse.json({ ...parsedJson, source: "groq" });
   } catch (error) {
     return NextResponse.json(
       {

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { anthropicClient, CLAUDE_MODEL } from "@/lib/ai";
+import { groqClient, GROQ_MODEL } from "@/lib/ai";
 
 const payloadSchema = z.object({
   context: z.string().min(5),
@@ -20,7 +20,7 @@ export async function POST(request: Request) {
 
     const { context, tone } = parsed.data;
 
-    if (!anthropicClient || !process.env.ANTHROPIC_API_KEY) {
+    if (!groqClient || !process.env.GROQ_API_KEY) {
       return NextResponse.json({
         subjectLines: [
           "You asked, we listened: your favorites are back",
@@ -46,16 +46,13 @@ Constraints:
 - Output only numbered lines
 `;
 
-    const completion = await anthropicClient.messages.create({
-      model: CLAUDE_MODEL,
+    const completion = await groqClient.chat.completions.create({
+      model: GROQ_MODEL,
       max_tokens: 250,
       messages: [{ role: "user", content: prompt }],
     });
 
-    const text = completion.content
-      .map((c) => ("text" in c ? c.text : ""))
-      .join("\n")
-      .trim();
+    const text = completion.choices[0]?.message?.content?.trim() ?? "";
 
     const subjectLines = text
       .split("\n")
@@ -65,7 +62,7 @@ Constraints:
 
     return NextResponse.json({
       subjectLines,
-      provider: "anthropic",
+      provider: "groq",
     });
   } catch (error) {
     console.error("POST /api/ai/generate-subject-lines failed", error);

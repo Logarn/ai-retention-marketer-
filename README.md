@@ -3,7 +3,7 @@
 Full-stack retention marketing platform for DTC/e-commerce teams with:
 
 - Analytics-first dashboard (overview metrics, cohorts, RFM segmentation, attribution, product insights)
-- AI message composer for Email/SMS (Anthropic Claude with mock fallback)
+- AI message composer for Email/SMS (Groq with mock fallback)
 - Campaign and template management foundations
 - Churn risk scoring and at-risk customer workflows
 - Prisma/PostgreSQL-backed data model with rich seed data
@@ -14,7 +14,7 @@ Full-stack retention marketing platform for DTC/e-commerce teams with:
 - Prisma ORM + PostgreSQL
 - SWR for client data fetching
 - Recharts for analytics visualization
-- Anthropic SDK (`claude-sonnet-4-20250514`) with fallback responses
+- Groq SDK (`llama-3.3-70b-versatile`) with fallback responses
 
 ## Setup
 
@@ -34,7 +34,7 @@ Required vars:
 
 ```env
 DATABASE_URL="postgresql://..."
-ANTHROPIC_API_KEY="sk-ant-..." # optional, app uses mock fallback if unset
+GROQ_API_KEY="gsk_..." # optional, app uses mock fallback if unset
 NEXTAUTH_SECRET="..."
 NEXTAUTH_URL="http://localhost:3000"
 RESEND_API_KEY="..."            # optional
