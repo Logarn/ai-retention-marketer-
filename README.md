@@ -1,36 +1,97 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AI Retention Marketer for E-Commerce
 
-## Getting Started
+Full-stack retention marketing platform for DTC/e-commerce teams with:
 
-First, run the development server:
+- Analytics-first dashboard (overview metrics, cohorts, RFM segmentation, attribution, product insights)
+- AI message composer for Email/SMS (Anthropic Claude with mock fallback)
+- Campaign and template management foundations
+- Churn risk scoring and at-risk customer workflows
+- Prisma/PostgreSQL-backed data model with rich seed data
+
+## Stack
+
+- Next.js (App Router) + TypeScript + Tailwind
+- Prisma ORM + PostgreSQL
+- SWR for client data fetching
+- Recharts for analytics visualization
+- Anthropic SDK (`claude-sonnet-4-20250514`) with fallback responses
+
+## Setup
+
+1. Install dependencies:
+
+```bash
+npm install
+```
+
+2. Configure environment:
+
+```bash
+cp .env.example .env
+```
+
+Required vars:
+
+```env
+DATABASE_URL="postgresql://..."
+ANTHROPIC_API_KEY="sk-ant-..." # optional, app uses mock fallback if unset
+NEXTAUTH_SECRET="..."
+NEXTAUTH_URL="http://localhost:3000"
+RESEND_API_KEY="..."            # optional
+TWILIO_ACCOUNT_SID="..."        # optional
+TWILIO_AUTH_TOKEN="..."         # optional
+TWILIO_PHONE_NUMBER="..."       # optional
+```
+
+3. Generate Prisma client and sync schema:
+
+```bash
+npm run db:generate
+npm run db:push
+```
+
+4. Seed data:
+
+```bash
+npm run db:seed
+```
+
+5. Start app:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open `http://localhost:3000`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Seed profile
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The seed script creates realistic e-commerce data:
 
-## Learn More
+- 200 customers with segment distribution targets
+- 1,500+ orders across last 18 months with seasonality
+- 50 products across skincare/apparel/accessories/bundles
+- 10,000+ customer events
+- 5 campaigns and metrics history
+- message templates
 
-To learn more about Next.js, take a look at the following resources:
+## Routes
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Pages
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `/dashboard`
+- `/customers`, `/customers/[id]`
+- `/segments`
+- `/campaigns`, `/campaigns/new`, `/campaigns/[id]`, `/campaigns/[id]/edit`
+- `/composer`
+- `/templates`
+- `/settings`
 
-## Deploy on Vercel
+### APIs
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `/api/analytics/*`
+- `/api/customers/*`
+- `/api/campaigns/*`
+- `/api/ai/*`
+- `/api/templates/*`
+- `/api/webhooks/*`
