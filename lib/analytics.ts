@@ -6,7 +6,7 @@ import {
   subDays,
   subMonths,
 } from "date-fns";
-import { Prisma } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSegmentMeta } from "@/lib/constants";
 import { assignSegment, calculateChurnRisk, quantileScore } from "@/lib/segment";
