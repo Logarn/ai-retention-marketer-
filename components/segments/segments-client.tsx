@@ -23,8 +23,8 @@ export function SegmentsClient() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">RFM Segments</h1>
-        <p className="text-sm text-slate-500 mt-1">
+        <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">RFM Segments</h1>
+        <p className="mt-1 text-sm text-zinc-400">
           Prioritize retention actions by segment opportunity and customer value.
         </p>
       </div>
@@ -41,8 +41,8 @@ export function SegmentsClient() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2 text-sm">
-                  <p className="text-slate-600">Avg CLV: ${segment.averageClv.toFixed(2)}</p>
-                  <p className="text-slate-500">{segment.recommendedAction}</p>
+                  <p className="text-zinc-300">Avg CLV: ${segment.averageClv.toFixed(2)}</p>
+                  <p className="text-zinc-400">{segment.recommendedAction}</p>
                 </CardContent>
               </Card>
             ))}

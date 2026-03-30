@@ -100,15 +100,15 @@ function MetricCard({
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm text-slate-500">{title}</CardTitle>
+        <CardTitle className="text-xs uppercase tracking-wide text-zinc-400">{title}</CardTitle>
       </CardHeader>
       <CardContent>
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-2xl font-semibold">{value}</p>
-            <p className="text-xs text-slate-500 mt-1">{subtitle}</p>
+            <p className="text-2xl font-semibold text-zinc-100">{value}</p>
+            <p className="mt-1 text-xs text-zinc-400">{subtitle}</p>
           </div>
-          <div className="text-slate-400">{icon}</div>
+          <div className="text-zinc-500">{icon}</div>
         </div>
       </CardContent>
     </Card>
@@ -117,9 +117,9 @@ function MetricCard({
 
 function CohortHeatCell({ value }: { value: number }) {
   const intensity = Math.min(1, value / 100);
-  const bg = `rgba(34, 197, 94, ${0.1 + intensity * 0.6})`;
+  const bg = `rgba(61, 214, 140, ${0.13 + intensity * 0.55})`;
   return (
-    <td className="px-2 py-1 text-xs text-center rounded" style={{ backgroundColor: bg }}>
+    <td className="rounded px-2 py-1 text-center text-xs text-zinc-200" style={{ backgroundColor: bg }}>
       {value.toFixed(1)}%
     </td>
   );
@@ -212,8 +212,8 @@ export function DashboardClient() {
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Retention Analytics Dashboard</h1>
-          <p className="text-sm text-slate-500">
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">Retention Analytics Dashboard</h1>
+          <p className="text-sm text-zinc-400">
             Story-first retention analytics to drive repeat purchase growth.
           </p>
         </div>
@@ -268,8 +268,8 @@ export function DashboardClient() {
       </Card>
 
       {hasError && (
-        <Card className="border-red-200 bg-red-50">
-          <CardContent className="pt-6 flex gap-2 items-center text-red-700">
+        <Card className="border-red-300/30 bg-red-300/10">
+          <CardContent className="flex items-center gap-2 pt-6 text-red-100">
             <AlertTriangle className="h-4 w-4" />
             Some dashboard modules failed to load. Check API/database configuration.
           </CardContent>
@@ -334,15 +334,15 @@ export function DashboardClient() {
                 <SegmentPieChart data={rfm} />
                 <div className="grid gap-2">
                   {rfm.map((segment) => (
-                    <div key={segment.key} className="rounded-md border p-3">
+                    <div key={segment.key} className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
                           <Badge style={{ backgroundColor: segment.color, color: "white" }}>{segment.label}</Badge>
-                          <span className="text-sm text-slate-500">{segment.count} customers</span>
+                          <span className="text-sm text-zinc-400">{segment.count} customers</span>
                         </div>
-                        <span className="text-sm font-medium">${segment.averageClv.toFixed(0)} avg CLV</span>
+                        <span className="text-sm font-medium text-zinc-200">${segment.averageClv.toFixed(0)} avg CLV</span>
                       </div>
-                      <p className="text-xs text-slate-500 mt-1">{segment.recommendedAction}</p>
+                      <p className="mt-1 text-xs text-zinc-400">{segment.recommendedAction}</p>
                     </div>
                   ))}
                 </div>
@@ -363,9 +363,9 @@ export function DashboardClient() {
             )}
             <div className="mt-3 grid gap-2">
               {attribution?.byChannel.map((entry) => (
-                <div key={entry.channel} className="text-sm flex justify-between border rounded px-3 py-2">
+                <div key={entry.channel} className="flex justify-between rounded-xl border border-white/10 px-3 py-2 text-sm">
                   <span className="capitalize">{entry.channel}</span>
-                  <span>
+                  <span className="text-zinc-300">
                     ${entry.revenue.toFixed(2)} ({entry.revenuePerMessage.toFixed(2)} / message)
                   </span>
                 </div>
@@ -386,7 +386,7 @@ export function DashboardClient() {
             <div className="overflow-auto">
               <table className="min-w-full border-separate border-spacing-y-1">
                 <thead>
-                  <tr className="text-xs text-slate-500">
+                  <tr className="text-xs text-zinc-400">
                     <th className="text-left px-2 py-1">Cohort</th>
                     <th className="text-left px-2 py-1">Customers</th>
                     {Array.from({ length: cohorts.months + 1 }).map((_, monthIdx) => (
@@ -399,8 +399,8 @@ export function DashboardClient() {
                 <tbody>
                   {cohorts.rows.map((row) => (
                     <tr key={row.cohort}>
-                      <td className="px-2 py-1 font-medium text-sm">{row.cohort}</td>
-                      <td className="px-2 py-1 text-sm text-slate-600">{row.customers}</td>
+                      <td className="px-2 py-1 text-sm font-medium text-zinc-200">{row.cohort}</td>
+                      <td className="px-2 py-1 text-sm text-zinc-400">{row.customers}</td>
                       {Array.from({ length: cohorts.months + 1 }).map((_, monthIdx) => (
                         <CohortHeatCell
                           key={monthIdx}
@@ -427,10 +427,10 @@ export function DashboardClient() {
             ) : (
               <div className="space-y-2">
                 {productInsights.topRepeatPurchase.slice(0, 8).map((product) => (
-                  <div key={product.productId} className="flex items-center justify-between rounded border px-3 py-2">
+                  <div key={product.productId} className="flex items-center justify-between rounded-xl border border-white/10 px-3 py-2">
                     <div>
-                      <p className="font-medium text-sm">{product.productName}</p>
-                      <p className="text-xs text-slate-500">{product.category || "Uncategorized"}</p>
+                      <p className="text-sm font-medium text-zinc-100">{product.productName}</p>
+                      <p className="text-xs text-zinc-400">{product.category || "Uncategorized"}</p>
                     </div>
                     <Badge variant="outline">{product.repeatRate.toFixed(1)}%</Badge>
                   </div>
@@ -450,11 +450,11 @@ export function DashboardClient() {
             ) : (
               <div className="space-y-2">
                 {productInsights.productAffinity.slice(0, 8).map((pair, idx) => (
-                  <div key={`${pair.productA}-${pair.productB}-${idx}`} className="rounded border px-3 py-2">
-                    <p className="text-sm font-medium">
+                  <div key={`${pair.productA}-${pair.productB}-${idx}`} className="rounded-xl border border-white/10 px-3 py-2">
+                    <p className="text-sm font-medium text-zinc-100">
                       {pair.productA} + {pair.productB}
                     </p>
-                    <p className="text-xs text-slate-500">{pair.overlapOrders} overlapping orders</p>
+                    <p className="text-xs text-zinc-400">{pair.overlapOrders} overlapping orders</p>
                   </div>
                 ))}
               </div>

@@ -85,7 +85,7 @@ export function TemplatesClient() {
             disabled={channel !== "email"}
           />
           <textarea
-            className="md:col-span-2 min-h-[140px] w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
+            className="textarea-base md:col-span-2 min-h-[140px]"
             value={body}
             onChange={(e) => setBody(e.target.value)}
             placeholder="Template body"
@@ -101,12 +101,12 @@ export function TemplatesClient() {
           <CardTitle>Template Library</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          {isLoading && <p className="text-sm text-slate-500">Loading templates...</p>}
+          {isLoading && <p className="text-sm text-zinc-400">Loading templates...</p>}
           {!isLoading &&
             (data ?? []).map((tpl) => (
-              <div key={tpl.id} className="rounded border p-3">
+              <div key={tpl.id} className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="font-medium">{tpl.name}</h3>
+                  <h3 className="font-medium text-zinc-100">{tpl.name}</h3>
                   <div className="flex items-center gap-2">
                     <Badge variant="outline">{tpl.channel}</Badge>
                     <Badge variant="secondary">{tpl.type}</Badge>
@@ -115,8 +115,8 @@ export function TemplatesClient() {
                     </Button>
                   </div>
                 </div>
-                {tpl.subject && <p className="text-sm mt-1">Subject: {tpl.subject}</p>}
-                <p className="text-sm text-slate-600 mt-1 whitespace-pre-wrap">{tpl.body}</p>
+                {tpl.subject && <p className="mt-1 text-sm text-zinc-300">Subject: {tpl.subject}</p>}
+                <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-400">{tpl.body}</p>
               </div>
             ))}
         </CardContent>

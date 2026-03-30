@@ -37,10 +37,10 @@ export function CustomersClient() {
   } = useSWR<{ data: Customer[] }>("/api/customers?page=1&pageSize=200", fetcher);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Customers</h1>
-        <p className="text-sm text-slate-500">Filter and inspect customer health and churn risk.</p>
+        <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">Customers</h1>
+        <p className="text-sm text-zinc-400">Filter and inspect customer health and churn risk.</p>
       </div>
 
       <Card>
@@ -52,13 +52,13 @@ export function CustomersClient() {
           <Select disabled>
             <option>All segments</option>
           </Select>
-          <div className="text-xs text-slate-500">Interactive filters can be wired to query params.</div>
+          <div className="text-xs text-zinc-400">Interactive filters can be wired to query params.</div>
         </CardContent>
       </Card>
 
       {error && (
-        <Card className="border-red-200 bg-red-50">
-          <CardContent className="pt-6 flex items-center gap-2 text-red-700">
+        <Card className="border-red-300/30 bg-red-300/10">
+          <CardContent className="flex items-center gap-2 pt-6 text-red-100">
             <AlertTriangle className="h-4 w-4" />
             Failed to load customer list.
           </CardContent>
@@ -89,7 +89,7 @@ export function CustomersClient() {
                   {payload.data.map((customer) => (
                     <TableRow key={customer.id}>
                       <TableCell className="font-medium">
-                        <Link href={`/customers/${customer.id}`} className="hover:underline">
+                        <Link href={`/customers/${customer.id}`} className="hover:text-orange-200 hover:underline">
                           {[customer.firstName, customer.lastName].filter(Boolean).join(" ") || "Unknown"}
                         </Link>
                       </TableCell>

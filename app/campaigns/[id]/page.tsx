@@ -31,7 +31,7 @@ export default function CampaignDetailPage({
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold tracking-tight">{data.name}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">{data.name}</h1>
         <div className="flex items-center gap-2">
           <Badge variant="outline">{data.channel}</Badge>
           <Badge variant="secondary">{data.status}</Badge>
@@ -46,29 +46,29 @@ export default function CampaignDetailPage({
           <CardTitle>Campaign Metrics</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-3 lg:grid-cols-6 text-sm">
-          <div className="rounded border p-3">
-            <p className="text-slate-500">Sent</p>
-            <p className="text-xl font-semibold">{data.metrics?.sent ?? 0}</p>
+          <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+            <p className="text-zinc-400">Sent</p>
+            <p className="text-xl font-semibold text-zinc-100">{data.metrics?.sent ?? 0}</p>
           </div>
-          <div className="rounded border p-3">
-            <p className="text-slate-500">Delivered</p>
-            <p className="text-xl font-semibold">{data.metrics?.delivered ?? 0}</p>
+          <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+            <p className="text-zinc-400">Delivered</p>
+            <p className="text-xl font-semibold text-zinc-100">{data.metrics?.delivered ?? 0}</p>
           </div>
-          <div className="rounded border p-3">
-            <p className="text-slate-500">Opened</p>
-            <p className="text-xl font-semibold">{data.metrics?.opened ?? 0}</p>
+          <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+            <p className="text-zinc-400">Opened</p>
+            <p className="text-xl font-semibold text-zinc-100">{data.metrics?.opened ?? 0}</p>
           </div>
-          <div className="rounded border p-3">
-            <p className="text-slate-500">Clicked</p>
-            <p className="text-xl font-semibold">{data.metrics?.clicked ?? 0}</p>
+          <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+            <p className="text-zinc-400">Clicked</p>
+            <p className="text-xl font-semibold text-zinc-100">{data.metrics?.clicked ?? 0}</p>
           </div>
-          <div className="rounded border p-3">
-            <p className="text-slate-500">Converted</p>
-            <p className="text-xl font-semibold">{data.metrics?.converted ?? 0}</p>
+          <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+            <p className="text-zinc-400">Converted</p>
+            <p className="text-xl font-semibold text-zinc-100">{data.metrics?.converted ?? 0}</p>
           </div>
-          <div className="rounded border p-3">
-            <p className="text-slate-500">Revenue</p>
-            <p className="text-xl font-semibold">${(data.metrics?.revenue ?? 0).toFixed(2)}</p>
+          <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+            <p className="text-zinc-400">Revenue</p>
+            <p className="text-xl font-semibold text-zinc-100">${(data.metrics?.revenue ?? 0).toFixed(2)}</p>
           </div>
         </CardContent>
       </Card>

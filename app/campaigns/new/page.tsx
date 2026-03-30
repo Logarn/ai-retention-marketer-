@@ -49,26 +49,26 @@ export default function NewCampaignPage() {
   };
 
   return (
-    <Card>
+    <Card className="max-w-3xl">
       <CardHeader>
         <CardTitle>Create New Campaign</CardTitle>
       </CardHeader>
       <CardContent>
-        <form className="grid gap-4 max-w-2xl" onSubmit={onSubmit}>
+        <form className="grid max-w-2xl gap-4" onSubmit={onSubmit}>
           <div className="grid gap-2">
-            <label className="text-sm font-medium">Campaign Name</label>
+            <label className="text-sm font-medium text-zinc-300">Campaign Name</label>
             <Input value={name} onChange={(event) => setName(event.target.value)} required />
           </div>
           <div className="grid gap-2 md:grid-cols-3">
             <div className="space-y-2">
-              <label className="text-sm font-medium">Type</label>
+              <label className="text-sm font-medium text-zinc-300">Type</label>
               <Select value={type} onChange={(event) => setType(event.target.value)}>
                 <option value="one_time">One-time</option>
                 <option value="automated_flow">Automated flow</option>
               </Select>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">Channel</label>
+              <label className="text-sm font-medium text-zinc-300">Channel</label>
               <Select value={channel} onChange={(event) => setChannel(event.target.value)}>
                 <option value="email">Email</option>
                 <option value="sms">SMS</option>
@@ -76,7 +76,7 @@ export default function NewCampaignPage() {
               </Select>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">Status</label>
+              <label className="text-sm font-medium text-zinc-300">Status</label>
               <Select value={status} onChange={(event) => setStatus(event.target.value)}>
                 <option value="draft">Draft</option>
                 <option value="active">Active</option>
@@ -86,18 +86,18 @@ export default function NewCampaignPage() {
             </div>
           </div>
           <div className="grid gap-2">
-            <label className="text-sm font-medium">Subject (optional)</label>
+            <label className="text-sm font-medium text-zinc-300">Subject (optional)</label>
             <Input value={subject} onChange={(event) => setSubject(event.target.value)} />
           </div>
           <div className="grid gap-2">
-            <label className="text-sm font-medium">Body (optional)</label>
+            <label className="text-sm font-medium text-zinc-300">Body (optional)</label>
             <textarea
-              className="h-40 w-full rounded-md border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10"
+              className="textarea-base h-40"
               value={body}
               onChange={(event) => setBody(event.target.value)}
             />
           </div>
-          {error ? <p className="text-sm text-red-600">{error}</p> : null}
+          {error ? <p className="text-sm text-red-300">{error}</p> : null}
           <div className="flex justify-end">
             <Button type="submit" disabled={isSubmitting}>
               {isSubmitting ? "Creating..." : "Create Campaign"}
