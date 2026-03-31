@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { anthropicClient, CLAUDE_MODEL } from "@/lib/ai";
+import { groqClient, GROQ_MODEL } from "@/lib/ai";
 
 export async function POST(request: NextRequest) {
   try {
@@ -9,7 +9,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "prompt is required" }, { status: 400 });
     }
 
-    if (!anthropicClient) {
+    if (!groqClient) {
       return NextResponse.json({
         insights: [
           "Retention trend: active customer ratio is stable, but win-back opportunities are concentrated in at-risk high CLV users.",
@@ -20,17 +20,13 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const response = await anthropicClient.messages.create({
-      model: CLAUDE_MODEL,
-      max_tokens: 900,
+    const response = await groqClient.chat.completions.create({
+      model: GROQ_MODEL,
       temperature: 0.3,
       messages: [{ role: "user", content: prompt }],
     });
 
-    const text = response.content
-      .filter((item) => item.type === "text")
-      .map((item) => item.text)
-      .join("\n");
+    const text = response.choices?.[0]?.message?.content || "";
 
     return NextResponse.json({ raw: text, mocked: false });
   } catch (error) {

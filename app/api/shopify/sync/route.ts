@@ -286,7 +286,7 @@ export async function POST(request: NextRequest) {
 
     if (background) {
       const jobs = getJobMap();
-      const job = runShopifySync({
+      const job: Promise<void> = runShopifySync({
         runId: run.id,
         mode,
         token: tokenResult.token,
@@ -294,6 +294,7 @@ export async function POST(request: NextRequest) {
         isBackground: true,
         currentState: tokenResult.state,
       })
+        .then(() => undefined)
         .catch((error) => {
           console.error("[shopify-sync] Background sync failed", { runId: run.id, error });
         })

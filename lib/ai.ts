@@ -1,10 +1,10 @@
-import Anthropic from "@anthropic-ai/sdk";
+import Groq from "groq-sdk";
 
-export const anthropicClient = process.env.ANTHROPIC_API_KEY
-  ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+export const groqClient = process.env.GROQ_API_KEY
+  ? new Groq({ apiKey: process.env.GROQ_API_KEY })
   : null;
 
-export const CLAUDE_MODEL = "claude-sonnet-4-20250514";
+export const GROQ_MODEL = "llama-3.3-70b-versatile";
 
 type AnalyticsInsightsInput = {
   overview: {
@@ -32,8 +32,8 @@ type AnalyticsInsightsInput = {
 
 export async function generateAnalyticsInsights(
   input: AnalyticsInsightsInput,
-): Promise<{ insights: string[]; source: "anthropic" | "mock" }> {
-  if (!anthropicClient) {
+): Promise<{ insights: string[]; source: "groq" | "mock" }> {
+  if (!groqClient) {
     const topSegment = [...input.segments].sort((a, b) => b.count - a.count)[0];
     const bestChannel = [...input.channelPerformance].sort(
       (a, b) => b.revenuePerMessage - a.revenuePerMessage,
@@ -90,23 +90,20 @@ Requirements:
 - Each insight must include a concrete recommendation.
 - Keep each insight under 45 words.`;
 
-  const response = await anthropicClient.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: 700,
+  const response = await groqClient.chat.completions.create({
+    model: GROQ_MODEL,
     temperature: 0.3,
+    max_completion_tokens: 700,
     messages: [{ role: "user", content: prompt }],
+    response_format: { type: "json_object" },
   });
-
-  const raw = response.content
-    .map((part) => ("text" in part ? part.text : ""))
-    .join("")
-    .trim();
+  const raw = response.choices[0]?.message?.content?.trim() ?? "";
 
   try {
     const parsed = JSON.parse(raw) as { insights?: string[] };
     const insights = (parsed.insights ?? []).filter(Boolean).slice(0, 3);
     if (insights.length > 0) {
-      return { insights, source: "anthropic" };
+      return { insights, source: "groq" };
     }
   } catch {
     // Fallback below if model returns non-JSON.

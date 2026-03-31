@@ -107,7 +107,11 @@ function getNextLink(linkHeader: string | null) {
   return null;
 }
 
-async function fetchShopifyPage<T>(url: string, token: string, collectionKey: string) {
+async function fetchShopifyPage<T>(
+  url: string,
+  token: string,
+  collectionKey: string,
+): Promise<{ items: T[]; nextUrl: string | null }> {
   const response = await fetch(url, {
     headers: {
       "X-Shopify-Access-Token": token,
@@ -131,7 +135,7 @@ async function fetchShopifyCollection<T>(
   resource: "orders" | "products" | "customers",
   token: string,
   opts?: { updatedAtMin?: Date | null; extraParams?: Record<string, string> },
-) {
+): Promise<T[]> {
   const baseUrl = new URL(`${getShopifyApiBase()}/${resource}.json`);
   baseUrl.searchParams.set("limit", "250");
   if (opts?.updatedAtMin) {
@@ -146,7 +150,11 @@ async function fetchShopifyCollection<T>(
   let pageCount = 0;
 
   while (pageUrl && pageCount < 30) {
-    const page = await fetchShopifyPage<T>(pageUrl, token, resource);
+    const page: { items: T[]; nextUrl: string | null } = await fetchShopifyPage<T>(
+      pageUrl,
+      token,
+      resource,
+    );
     all.push(...page.items);
     pageUrl = page.nextUrl;
     pageCount += 1;
