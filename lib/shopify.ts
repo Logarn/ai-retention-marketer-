@@ -369,10 +369,6 @@ async function fetchAllFromShopifyGraphql(token: string): Promise<ShopifyRestPay
             displayFinancialStatus
             createdAt
             processedAt
-            customer {
-              id
-              email
-            }
             totalPriceSet {
               shopMoney {
                 amount
@@ -418,22 +414,6 @@ async function fetchAllFromShopifyGraphql(token: string): Promise<ShopifyRestPay
                 }
               }
             }
-          }
-        }
-      }
-    }
-  `;
-  const customersQuery = `
-    query DirectSyncCustomers {
-      customers(first: 250) {
-        edges {
-          node {
-            id
-            email
-            firstName
-            lastName
-            phone
-            createdAt
           }
         }
       }
@@ -492,7 +472,6 @@ async function fetchAllFromShopifyGraphql(token: string): Promise<ShopifyRestPay
       displayFinancialStatus?: string;
       createdAt?: string;
       processedAt?: string;
-      customer?: { id?: string; email?: string };
       totalPriceSet?: { shopMoney?: { amount?: string } };
       lineItems?: {
         edges?: Array<{
@@ -516,10 +495,6 @@ async function fetchAllFromShopifyGraphql(token: string): Promise<ShopifyRestPay
           ? orderNumberFromName
           : index + 1,
       email: node.email,
-      customer: {
-        id: parseShopifyNumericId(node.customer?.id),
-        email: node.customer?.email,
-      },
       total_price: node.totalPriceSet?.shopMoney?.amount,
       financial_status: node.displayFinancialStatus,
       created_at: node.createdAt,
@@ -535,56 +510,8 @@ async function fetchAllFromShopifyGraphql(token: string): Promise<ShopifyRestPay
     };
   });
 
-  let customers: ShopifyRestPayload["customers"] = [];
-  const customerResponse = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": token,
-    },
-    body: JSON.stringify({ query: customersQuery }),
-  });
-  const customerPayload = (await customerResponse.json()) as {
-    errors?: Array<{ message?: string; extensions?: { code?: string } }>;
-    data?: {
-      customers?: { edges?: Array<{ node?: Record<string, unknown> }> };
-    };
-  };
-  if (!customerResponse.ok || customerPayload.errors?.length) {
-    const accessDenied = (customerPayload.errors ?? []).some((error) =>
-      /ACCESS_DENIED|protected customer data|Customer object/i.test(
-        `${error.extensions?.code ?? ""} ${error.message ?? ""}`,
-      ),
-    );
-    if (accessDenied) {
-      console.warn("[shopify] Customer GraphQL access denied; continuing with orders/products only.");
-    } else {
-      throw new Error(
-        `GraphQL customers fetch failed (${customerResponse.status}): ${JSON.stringify(
-          customerPayload.errors || customerPayload,
-        ).slice(0, 380)}`,
-      );
-    }
-  } else {
-    customers = (customerPayload.data?.customers?.edges ?? []).map((edge) => {
-      const node = edge.node as {
-        id?: string;
-        email?: string;
-        firstName?: string;
-        lastName?: string;
-        phone?: string;
-        createdAt?: string;
-      };
-      return {
-        id: parseShopifyNumericId(node.id),
-        email: node.email,
-        first_name: node.firstName,
-        last_name: node.lastName,
-        phone: node.phone,
-        created_at: node.createdAt,
-      };
-    });
-  }
+  // Protected customer data access is not required for sync; derive customers from order emails.
+  const customers: ShopifyRestPayload["customers"] = [];
 
   return { customers, orders, products };
 }
