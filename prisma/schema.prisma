@@ -8,6 +8,7 @@ datasource db {
 
 model Customer {
   id               String            @id @default(cuid())
+  externalId       String?           @unique
   email            String            @unique
   phone            String?
   firstName        String?
@@ -30,6 +31,7 @@ model Customer {
 
 model Order {
   id          String    @id @default(cuid())
+  externalId  String?   @unique
   customerId  String
   customer    Customer  @relation(fields: [customerId], references: [id])
   orderNumber String
@@ -57,6 +59,7 @@ model OrderItem {
 
 model Product {
   id                   String      @id @default(cuid())
+  externalId           String?     @unique
   name                 String
   sku                  String      @unique
   price                Float
@@ -134,4 +137,47 @@ model MessageTemplate {
   subject   String?
   body      String
   createdAt DateTime @default(now())
+}
+
+model IntegrationState {
+  id                       String   @id @default(cuid())
+  provider                 String   @unique
+  connected                Boolean  @default(false)
+  accessToken              String?
+  refreshToken             String?
+  tokenExpiresAt           DateTime?
+  lastSyncAt               DateTime?
+  lastSyncStatus           String?
+  lastSyncMessage          String?
+  syncInProgress           Boolean  @default(false)
+  shopifyLastOrdersSyncAt  DateTime?
+  shopifyLastProductsSyncAt DateTime?
+  shopifyLastCustomersSyncAt DateTime?
+  shopifyLastRunId         String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+}
+
+model ShopifySyncRun {
+  id                 String   @id @default(cuid())
+  mode               String
+  status             String
+  triggeredBy        String?
+  isBackground       Boolean  @default(false)
+  startedAt          DateTime?
+  completedAt        DateTime?
+  sinceOrdersAt      DateTime?
+  sinceProductsAt    DateTime?
+  customersFetched   Int      @default(0)
+  productsFetched    Int      @default(0)
+  ordersFetched      Int      @default(0)
+  customersUpserted  Int      @default(0)
+  productsUpserted   Int      @default(0)
+  ordersUpserted     Int      @default(0)
+  warnings           Json?
+  errorMessage       String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([status, createdAt])
 }

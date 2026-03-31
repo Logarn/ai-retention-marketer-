@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { AlertTriangle, DollarSign, RefreshCcw, Users, UserCheck, ShoppingBag } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -84,6 +85,55 @@ type ProductInsights = {
   }>;
 };
 
+type ToastKind = "success" | "error" | "info";
+
+type ToastItem = {
+  id: number;
+  kind: ToastKind;
+  message: string;
+};
+
+type ShopifySyncState = {
+  status: string;
+  connected: boolean;
+  syncInProgress: boolean;
+  lastSyncAt: string | null;
+  message: string | null;
+  activeRunId: string | null;
+  activeRun: {
+    id: string;
+    mode: string;
+    status: string;
+    isBackground: boolean;
+    startedAt: string | null;
+    completedAt: string | null;
+    customersFetched: number;
+    ordersFetched: number;
+    productsFetched: number;
+    customersUpserted: number;
+    ordersUpserted: number;
+    productsUpserted: number;
+    warnings: string[];
+    errorMessage: string | null;
+  } | null;
+  latestRun: {
+    id: string;
+    mode: string;
+    status: string;
+    isBackground: boolean;
+    startedAt: string | null;
+    completedAt: string | null;
+    customersFetched: number;
+    ordersFetched: number;
+    productsFetched: number;
+    customersUpserted: number;
+    ordersUpserted: number;
+    productsUpserted: number;
+    warnings: string[];
+    errorMessage: string | null;
+  } | null;
+};
+
 function MetricCard({
   title,
   value,
@@ -124,6 +174,9 @@ function CohortHeatCell({ value }: { value: number }) {
 }
 
 export function DashboardClient() {
+  const [isSyncingShopify, setIsSyncingShopify] = useState(false);
+  const [integrationMessage, setIntegrationMessage] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
   const {
     data: overview,
     error: overviewError,
@@ -146,11 +199,123 @@ export function DashboardClient() {
     "/api/analytics/product-insights",
     fetcher,
   );
+  const integrationState = useSWR<ShopifySyncState>("/api/shopify/sync", fetcher, {
+    refreshInterval: 12_000,
+  });
 
   const hasError = overviewError || rfmError || cohortsError || attributionError || productError;
+  const activeRun = integrationState.data?.activeRun;
+  const latestRun = integrationState.data?.latestRun;
+  const isPollingRun = Boolean(activeRun?.id);
+
+  useEffect(() => {
+    if (!activeRun?.id) return;
+    const interval = window.setInterval(() => {
+      void integrationState.mutate();
+    }, 4_000);
+    return () => window.clearInterval(interval);
+  }, [activeRun?.id, integrationState]);
+
+  const runWarnings = useMemo(
+    () => (activeRun?.warnings?.length ? activeRun.warnings : latestRun?.warnings ?? []),
+    [activeRun?.warnings, latestRun?.warnings],
+  );
+
+  function pushToast(kind: ToastKind, message: string) {
+    const id = Date.now() + Math.floor(Math.random() * 1000);
+    setToasts((previous) => [...previous, { id, kind, message }]);
+    setTimeout(() => {
+      setToasts((previous) => previous.filter((item) => item.id !== id));
+    }, 5000);
+  }
+
+  function dismissToast(id: number) {
+    setToasts((previous) => previous.filter((item) => item.id !== id));
+  }
+
+  function extractApiError(payload: unknown, fallback: string) {
+    if (payload && typeof payload === "object") {
+      const maybe = payload as { error?: string; detail?: string };
+      if (maybe.error && maybe.detail) return `${maybe.error}: ${maybe.detail}`;
+      if (maybe.error) return maybe.error;
+      if (maybe.detail) return maybe.detail;
+    }
+    return fallback;
+  }
+
+  async function startShopifySync(mode: "full" | "incremental", background: boolean) {
+    console.log("[dashboard] Shopify sync request", { mode, background });
+    setIsSyncingShopify(true);
+    setIntegrationMessage(null);
+    try {
+      const response = await fetch("/api/shopify/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode, background }),
+      });
+      const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!response.ok) {
+        if (json.code === "SHOPIFY_TOKEN_REQUIRED" || json.code === "SHOPIFY_TOKEN_INVALID") {
+          pushToast("info", "Shopify is not connected. Redirecting to Connect Shopify.");
+          window.location.href = "/api/auth/shopify";
+          return;
+        }
+        throw new Error(extractApiError(json, "Shopify sync failed"));
+      }
+
+      if (background) {
+        const runId = String(json.runId || "");
+        pushToast("info", "Background sync started. Polling live status now.");
+        setIntegrationMessage(`Background ${mode} sync started${runId ? ` (run ${runId})` : ""}.`);
+      } else {
+        pushToast("success", "Shopify sync completed.");
+        setIntegrationMessage(String(json.message || "Shopify sync completed."));
+      }
+
+      await Promise.all([refreshOverview(), integrationState.mutate()]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Shopify sync failed";
+      console.error("[dashboard] Shopify sync error", error);
+      setIntegrationMessage(message);
+      pushToast("error", message);
+    } finally {
+      setIsSyncingShopify(false);
+    }
+  }
+
+  function handleConnectShopify() {
+    console.log("[dashboard] Connect Shopify clicked");
+    window.location.href = "/api/auth/shopify";
+  }
 
   return (
     <div className="space-y-6">
+      <div className="fixed right-4 top-4 z-50 space-y-2">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`w-[320px] rounded-xl border px-3 py-2 text-sm shadow-xl backdrop-blur ${
+              toast.kind === "success"
+                ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-100"
+                : toast.kind === "error"
+                  ? "border-red-400/40 bg-red-500/15 text-red-100"
+                  : "border-sky-400/40 bg-sky-500/15 text-sky-100"
+            }`}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <p>{toast.message}</p>
+              <button
+                type="button"
+                aria-label="Dismiss notification"
+                className="text-xs opacity-80 hover:opacity-100"
+                onClick={() => dismissToast(toast.id)}
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">Retention Analytics Dashboard</h1>
@@ -158,11 +323,100 @@ export function DashboardClient() {
             Story-first retention analytics to drive repeat purchase growth.
           </p>
         </div>
-        <Button variant="outline" onClick={() => void refreshOverview()}>
-          <RefreshCcw className="h-4 w-4" />
-          Refresh metrics
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button variant="outline" onClick={handleConnectShopify} disabled={isSyncingShopify}>
+            Connect Shopify
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => void startShopifySync("incremental", false)}
+            disabled={isSyncingShopify}
+          >
+            {isSyncingShopify ? "Working..." : "Sync Incremental"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => void startShopifySync("full", true)}
+            disabled={isSyncingShopify}
+          >
+            Start Background Full Sync
+          </Button>
+          <Button variant="outline" onClick={() => void refreshOverview()}>
+            <RefreshCcw className="h-4 w-4" />
+            Refresh metrics
+          </Button>
+        </div>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Shopify Integration Status</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <span>Connection:</span>
+            <Badge variant={integrationState.data?.connected ? "success" : "warning"}>
+              {integrationState.data?.connected ? "Connected" : "Not connected"}
+            </Badge>
+            <span>Sync status:</span>
+            <Badge
+              variant={
+                integrationState.data?.status === "success"
+                  ? "success"
+                  : integrationState.data?.status === "error"
+                    ? "destructive"
+                    : "outline"
+              }
+            >
+              {integrationState.data?.status ?? "idle"}
+            </Badge>
+            {isPollingRun ? <Badge variant="secondary">Polling live run</Badge> : null}
+          </div>
+          <p>
+            Last sync:{" "}
+            {integrationState.data?.lastSyncAt
+              ? new Date(integrationState.data.lastSyncAt).toLocaleString()
+              : "Not synced yet"}
+          </p>
+          {integrationState.data?.message ? (
+            <p className="text-zinc-300">{integrationState.data.message}</p>
+          ) : null}
+          {integrationMessage ? <p className="text-zinc-300">{integrationMessage}</p> : null}
+
+          {(activeRun || latestRun) && (
+            <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+              <p className="text-xs uppercase tracking-wide text-zinc-400">
+                {activeRun ? "Active run" : "Last run"}
+              </p>
+              <p className="mt-1 text-sm text-zinc-200">
+                {(activeRun || latestRun)?.mode} | {(activeRun || latestRun)?.status} | run{" "}
+                {(activeRun || latestRun)?.id}
+              </p>
+              <p className="mt-1 text-xs text-zinc-400">
+                fetched c/o/p: {(activeRun || latestRun)?.customersFetched ?? 0}/
+                {(activeRun || latestRun)?.ordersFetched ?? 0}/
+                {(activeRun || latestRun)?.productsFetched ?? 0}
+                {" · "}
+                upserted c/o/p: {(activeRun || latestRun)?.customersUpserted ?? 0}/
+                {(activeRun || latestRun)?.ordersUpserted ?? 0}/
+                {(activeRun || latestRun)?.productsUpserted ?? 0}
+              </p>
+              {(activeRun || latestRun)?.errorMessage ? (
+                <p className="mt-2 text-xs text-red-200">{(activeRun || latestRun)?.errorMessage}</p>
+              ) : null}
+              {runWarnings.length ? (
+                <div className="mt-2 space-y-1">
+                  {runWarnings.map((warning, index) => (
+                    <p key={`${warning}-${index}`} className="text-xs text-amber-200">
+                      Warning: {warning}
+                    </p>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {hasError && (
         <Card className="border-red-300/30 bg-red-300/10">

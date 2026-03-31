@@ -3,9 +3,10 @@
 Full-stack retention marketing platform for DTC/e-commerce teams with:
 
 - Analytics-first dashboard (overview metrics, cohorts, RFM segmentation, attribution, product insights)
-- AI message composer for Email/SMS (Anthropic Claude with mock fallback)
+- AI message composer for Email/SMS (Groq with fallback responses)
 - Campaign and template management foundations
 - Churn risk scoring and at-risk customer workflows
+- Shopify incremental/full sync + background jobs + webhook ingestion
 - Prisma/PostgreSQL-backed data model with rich seed data
 
 ## Stack
@@ -14,7 +15,7 @@ Full-stack retention marketing platform for DTC/e-commerce teams with:
 - Prisma ORM + PostgreSQL
 - SWR for client data fetching
 - Recharts for analytics visualization
-- Anthropic SDK (`claude-sonnet-4-20250514`) with fallback responses
+- Groq SDK (`llama-3.3-70b-versatile`)
 
 ## Setup
 
@@ -34,13 +35,13 @@ Required vars:
 
 ```env
 DATABASE_URL="postgresql://..."
-ANTHROPIC_API_KEY="sk-ant-..." # optional, app uses mock fallback if unset
+GROQ_API_KEY=""
 NEXTAUTH_SECRET="..."
 NEXTAUTH_URL="http://localhost:3000"
-RESEND_API_KEY="..."            # optional
-TWILIO_ACCOUNT_SID="..."        # optional
-TWILIO_AUTH_TOKEN="..."         # optional
-TWILIO_PHONE_NUMBER="..."       # optional
+SHOPIFY_STORE_NAME=""
+SHOPIFY_CLIENT_ID=""
+SHOPIFY_CLIENT_SECRET=""
+KLAVIYO_API_KEY=""
 ```
 
 3. Generate Prisma client and sync schema:
@@ -95,3 +96,23 @@ The seed script creates realistic e-commerce data:
 - `/api/ai/*`
 - `/api/templates/*`
 - `/api/webhooks/*`
+- `/api/auth/shopify` and `/api/auth/shopify/callback` for Shopify OAuth
+- `/api/auth/shopify/diagnostics` for runtime OAuth URL diagnostics
+- `/api/shopify/sync` for incremental/full sync + background jobs + status
+- `/api/shopify/sync/[runId]` for run polling
+- `/api/webhooks/shopify/orders/create`
+- `/api/webhooks/shopify/orders/updated`
+- `/api/webhooks/shopify/products/update`
+
+## Shopify env variables
+
+Add these values to `.env`:
+
+```env
+SHOPIFY_STORE_NAME="your-store-name" # without .myshopify.com
+SHOPIFY_CLIENT_ID=""
+SHOPIFY_CLIENT_SECRET=""
+SHOPIFY_ACCESS_TOKEN="" # optional if OAuth token stored in DB
+SHOPIFY_ADMIN_ACCESS_TOKEN="" # optional fallback
+SHOPIFY_WEBHOOK_SECRET="" # optional; enables HMAC verification on webhooks
+```
