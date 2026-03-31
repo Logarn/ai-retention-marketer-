@@ -85,6 +85,14 @@ type ProductInsights = {
   }>;
 };
 
+type ToastKind = "success" | "error" | "info";
+
+type ToastItem = {
+  id: number;
+  kind: ToastKind;
+  message: string;
+};
+
 function MetricCard({
   title,
   value,
@@ -129,6 +137,7 @@ export function DashboardClient() {
   const [isSyncingKlaviyoProfiles, setIsSyncingKlaviyoProfiles] = useState(false);
   const [isSyncingKlaviyoSegments, setIsSyncingKlaviyoSegments] = useState(false);
   const [integrationMessage, setIntegrationMessage] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
 
   const {
     data: overview,
@@ -155,6 +164,18 @@ export function DashboardClient() {
 
   const hasError = overviewError || rfmError || cohortsError || attributionError || productError;
   const integrationState = useSWR("/api/shopify/sync", fetcher);
+
+  function pushToast(kind: ToastKind, message: string) {
+    const id = Date.now() + Math.floor(Math.random() * 1000);
+    setToasts((previous) => [...previous, { id, kind, message }]);
+    setTimeout(() => {
+      setToasts((previous) => previous.filter((item) => item.id !== id));
+    }, 5000);
+  }
+
+  function dismissToast(id: number) {
+    setToasts((previous) => previous.filter((item) => item.id !== id));
+  }
 
   function extractApiError(payload: unknown, fallback: string) {
     if (payload && typeof payload === "object") {
@@ -183,7 +204,7 @@ export function DashboardClient() {
           json.code === "SHOPIFY_TOKEN_INVALID"
         ) {
           setIntegrationMessage("Shopify is not connected. Redirecting to Connect Shopify...");
-          alert("Shopify is not connected yet. Redirecting to Connect Shopify now.");
+          pushToast("info", "Shopify is not connected yet. Redirecting to Connect Shopify now.");
           window.location.href = "/api/auth/shopify";
           return;
         }
@@ -192,7 +213,7 @@ export function DashboardClient() {
       setIntegrationMessage(
         `Shopify sync completed: ${String((json.summary as Record<string, unknown> | undefined)?.customers ?? 0)} customers, ${String((json.summary as Record<string, unknown> | undefined)?.products ?? 0)} products, ${String((json.summary as Record<string, unknown> | undefined)?.orders ?? 0)} orders`,
       );
-      alert("Shopify sync successful!");
+      pushToast("success", "Shopify sync successful!");
       await Promise.all([
         refreshOverview(),
         integrationState.mutate(),
@@ -201,7 +222,7 @@ export function DashboardClient() {
       const message = error instanceof Error ? error.message : "Shopify sync failed";
       console.error("[dashboard] Shopify sync error", error);
       setIntegrationMessage(message);
-      alert(`Shopify sync failed: ${message}`);
+      pushToast("error", `Shopify sync failed: ${message}`);
     } finally {
       setIsSyncingShopify(false);
     }
@@ -223,12 +244,12 @@ export function DashboardClient() {
       if (!response.ok) throw new Error(extractApiError(json, "Klaviyo profile sync failed"));
       const message = `Klaviyo profile sync completed: ${String((json.summary as Record<string, unknown> | undefined)?.profilesSynced ?? 0)} profiles synced`;
       setIntegrationMessage(message);
-      alert("Klaviyo profiles pushed successfully!");
+      pushToast("success", "Klaviyo profiles pushed successfully!");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Klaviyo profile sync failed";
       console.error("[dashboard] Push to Klaviyo error", error);
       setIntegrationMessage(message);
-      alert(`Push to Klaviyo failed: ${message}`);
+      pushToast("error", `Push to Klaviyo failed: ${message}`);
     } finally {
       setIsSyncingKlaviyoProfiles(false);
     }
@@ -245,12 +266,12 @@ export function DashboardClient() {
       if (!response.ok) throw new Error(extractApiError(json, "Klaviyo segment sync failed"));
       const message = `Klaviyo segment sync completed: ${String((json.summary as Record<string, unknown> | undefined)?.segmentsSynced ?? 0)} segments synced`;
       setIntegrationMessage(message);
-      alert("Klaviyo segments synced successfully!");
+      pushToast("success", "Klaviyo segments synced successfully!");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Klaviyo segment sync failed";
       console.error("[dashboard] Sync Segments error", error);
       setIntegrationMessage(message);
-      alert(`Sync Segments failed: ${message}`);
+      pushToast("error", `Sync Segments failed: ${message}`);
     } finally {
       setIsSyncingKlaviyoSegments(false);
     }
@@ -258,6 +279,32 @@ export function DashboardClient() {
 
   return (
     <div className="space-y-6">
+      <div className="fixed right-4 top-4 z-50 space-y-2">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`w-[320px] rounded-xl border px-3 py-2 text-sm shadow-xl backdrop-blur ${
+              toast.kind === "success"
+                ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-100"
+                : toast.kind === "error"
+                  ? "border-red-400/40 bg-red-500/15 text-red-100"
+                  : "border-sky-400/40 bg-sky-500/15 text-sky-100"
+            }`}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <p>{toast.message}</p>
+              <button
+                type="button"
+                aria-label="Dismiss notification"
+                className="text-xs opacity-80 hover:opacity-100"
+                onClick={() => dismissToast(toast.id)}
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">Retention Analytics Dashboard</h1>
