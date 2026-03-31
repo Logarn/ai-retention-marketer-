@@ -6,6 +6,7 @@ export const DIRECT_SHOPIFY_GRAPHQL_ENDPOINT =
   "https://drrachaelinstitute.myshopify.com/admin/api/2024-01/graphql.json";
 export const DIRECT_SHOPIFY_REST_CUSTOMERS_ENDPOINT_TEMPLATE =
   "https://{SHOPIFY_CLIENT_ID}:{SHOPIFY_CLIENT_SECRET}@drrachaelinstitute.myshopify.com/admin/api/2024-01/customers.json";
+export const SHOPIFY_CALLBACK_PATH = "/api/auth/shopify/callback";
 
 function getStoreDomain() {
   // Defaults to the primary store used in this project if env is missing.
@@ -35,17 +36,21 @@ export function getShopifyAuthUrl() {
   return getShopifyAuthUrlWithBase(process.env.NEXTAUTH_URL ?? "");
 }
 
+export function getShopifyCallbackUrlWithBase(baseUrl: string) {
+  const normalizedBase = baseUrl.replace(/\/+$/, "");
+  return `${normalizedBase}${SHOPIFY_CALLBACK_PATH}`;
+}
+
 export function getShopifyAuthUrlWithBase(baseUrl: string, state?: string) {
   const shop = getStoreDomain();
   const clientId = process.env.SHOPIFY_CLIENT_ID;
   const scopes = ["read_customers", "read_orders", "read_products"].join(",");
-  const normalizedBase = baseUrl.replace(/\/+$/, "");
-  const redirectUri = `${normalizedBase}/api/auth/shopify`;
+  const redirectUri = getShopifyCallbackUrlWithBase(baseUrl);
   if (!clientId) throw new Error("SHOPIFY_CLIENT_ID is not configured.");
   const nonce = state ?? crypto.randomUUID();
   return `https://${shop}/admin/oauth/authorize?client_id=${clientId}&scope=${encodeURIComponent(
     scopes,
-  )}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${nonce}`;
+  )}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${nonce}&shop=${encodeURIComponent(shop)}`;
 }
 
 export async function exchangeShopifyCodeForToken(code: string) {
