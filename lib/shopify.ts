@@ -3,22 +3,23 @@ import { ApiVersion } from "@shopify/shopify-api";
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-export const DIRECT_SHOPIFY_GRAPHQL_ENDPOINT =
-  "https://drrachaelinstitute.myshopify.com/admin/api/2024-01/graphql.json";
+export const DIRECT_SHOPIFY_GRAPHQL_ENDPOINT_TEMPLATE =
+  "https://{SHOPIFY_STORE_NAME}.myshopify.com/admin/api/2024-01/graphql.json";
 export const DIRECT_SHOPIFY_REST_CUSTOMERS_ENDPOINT_TEMPLATE =
-  "https://{SHOPIFY_CLIENT_ID}:{SHOPIFY_CLIENT_SECRET}@drrachaelinstitute.myshopify.com/admin/api/2024-01/customers.json";
+  "https://{SHOPIFY_CLIENT_ID}:{SHOPIFY_CLIENT_SECRET}@{SHOPIFY_STORE_NAME}.myshopify.com/admin/api/2024-01/customers.json";
 export const SHOPIFY_CALLBACK_PATH = "/api/auth/shopify/callback";
 
 function getStoreDomain() {
-  // Defaults to the primary store used in this project if env is missing.
-  const store = process.env.SHOPIFY_STORE_NAME || "drrachaelinstitute";
+  const store = process.env.SHOPIFY_STORE_NAME?.trim();
   if (!store) throw new Error("SHOPIFY_STORE_NAME is not configured.");
   return `${store}.myshopify.com`;
 }
 
 export function getShopifyConfigDebug() {
-  const storeName = process.env.SHOPIFY_STORE_NAME || "drrachaelinstitute";
-  const endpoint = `https://${storeName}.myshopify.com/admin/api/2024-01/graphql.json`;
+  const storeName = process.env.SHOPIFY_STORE_NAME?.trim() || null;
+  const endpoint = storeName
+    ? `https://${storeName}.myshopify.com/admin/api/2024-01/graphql.json`
+    : null;
   return {
     storeName,
     endpoint,
@@ -278,10 +279,10 @@ async function fetchAllFromShopifyRest(token: string): Promise<ShopifyRestPayloa
 }
 
 async function fetchAllFromShopifyDirectCredentials(): Promise<ShopifyRestPayload> {
-  const store = process.env.SHOPIFY_STORE_NAME || "drrachaelinstitute";
+  const store = process.env.SHOPIFY_STORE_NAME?.trim();
   const clientId = process.env.SHOPIFY_CLIENT_ID;
   const clientSecret = process.env.SHOPIFY_CLIENT_SECRET;
-  if (!clientId || !clientSecret) {
+  if (!store || !clientId || !clientSecret) {
     throw new Error("Direct Shopify credentials missing (SHOPIFY_CLIENT_ID / SHOPIFY_CLIENT_SECRET).");
   }
 
