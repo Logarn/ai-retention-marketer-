@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, Bot, Cog, LayoutGrid, Megaphone, Users2 } from "lucide-react";
+import { BarChart3, Bot, Brain, LayoutGrid, Megaphone, Users2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -12,7 +12,7 @@ const navItems = [
   { href: "/campaigns", label: "Campaigns", icon: Megaphone },
   { href: "/composer", label: "AI Composer", icon: Bot },
   { href: "/templates", label: "Templates", icon: LayoutGrid },
-  { href: "/settings", label: "Settings", icon: Cog },
+  { href: "/brain", label: "Brand Brain", icon: Brain },
 ];
 
 export function LayoutShell({ children }: { children: React.ReactNode }) {
