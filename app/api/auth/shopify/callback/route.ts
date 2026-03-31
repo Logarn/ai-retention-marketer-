@@ -1,29 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { exchangeShopifyCodeForToken } from "@/lib/shopify";
+import { exchangeShopifyCodeForToken, resolveShopifyBaseUrlFromRequest } from "@/lib/shopify";
 import { prisma } from "@/lib/prisma";
-
-function getBaseUrl(request: NextRequest) {
-  const host = request.nextUrl.host.replace(/^0\.0\.0\.0(?=:\d+|$)/, "localhost");
-  const requestBase = `${request.nextUrl.protocol}//${host}`;
-  const configured = process.env.NEXTAUTH_URL?.trim();
-  if (!configured) return requestBase;
-
-  try {
-    const configuredUrl = new URL(configured);
-    // Avoid using an env base URL from a different host than this callback request.
-    if (configuredUrl.host !== host) {
-      console.warn("[shopify-oauth-callback] NEXTAUTH_URL host mismatch, using request host instead", {
-        configuredHost: configuredUrl.host,
-        requestHost: host,
-      });
-      return requestBase;
-    }
-    return `${configuredUrl.protocol}//${configuredUrl.host}`;
-  } catch {
-    console.warn("[shopify-oauth-callback] NEXTAUTH_URL invalid, using request host instead");
-    return requestBase;
-  }
-}
 
 export async function GET(request: NextRequest) {
   try {
@@ -32,7 +9,7 @@ export async function GET(request: NextRequest) {
     const code = searchParams.get("code");
     const shop = searchParams.get("shop");
     const stateFromQuery = searchParams.get("state");
-    const baseUrl = getBaseUrl(request);
+    const baseUrl = resolveShopifyBaseUrlFromRequest(request);
 
     if (!code || !shop) {
       return NextResponse.redirect(new URL("/dashboard?shopify=missing_code", baseUrl));

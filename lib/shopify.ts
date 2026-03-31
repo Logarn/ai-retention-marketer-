@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { ApiVersion } from "@shopify/shopify-api";
+import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 
 export const DIRECT_SHOPIFY_GRAPHQL_ENDPOINT =
@@ -24,6 +25,93 @@ export function getShopifyConfigDebug() {
     hasClientId: Boolean(process.env.SHOPIFY_CLIENT_ID),
     hasClientSecret: Boolean(process.env.SHOPIFY_CLIENT_SECRET),
     hasAccessToken: Boolean(process.env.SHOPIFY_ACCESS_TOKEN),
+  };
+}
+
+export function resolveShopifyBaseUrl(input: {
+  requestProtocol: string;
+  requestHost: string;
+  configuredNextAuthUrl?: string;
+}) {
+  const normalizedRequestHost = input.requestHost.replace(/^0\.0\.0\.0(?=:\d+|$)/, "localhost");
+  const requestOrigin = `${input.requestProtocol}//${normalizedRequestHost}`;
+  const configured = input.configuredNextAuthUrl?.trim();
+  if (!configured) {
+    return {
+      baseUrl: requestOrigin,
+      requestOrigin,
+      normalizedRequestHost,
+      configuredNextAuthUrl: null as string | null,
+      configuredOrigin: null as string | null,
+      usingConfigured: false,
+      hostMatches: true,
+      parseError: null as string | null,
+    };
+  }
+
+  try {
+    const configuredUrl = new URL(configured);
+    const configuredHost = configuredUrl.host.replace(/^0\.0\.0\.0(?=:\d+|$)/, "localhost");
+    const hostMatches = configuredHost === normalizedRequestHost;
+    if (hostMatches) {
+      return {
+        baseUrl: configuredUrl.origin,
+        requestOrigin,
+        normalizedRequestHost,
+        configuredNextAuthUrl: configured,
+        configuredOrigin: configuredUrl.origin,
+        usingConfigured: true,
+        hostMatches,
+        parseError: null as string | null,
+      };
+    }
+    return {
+      baseUrl: requestOrigin,
+      requestOrigin,
+      normalizedRequestHost,
+      configuredNextAuthUrl: configured,
+      configuredOrigin: configuredUrl.origin,
+      usingConfigured: false,
+      hostMatches,
+      parseError: null as string | null,
+    };
+  } catch (error) {
+    return {
+      baseUrl: requestOrigin,
+      requestOrigin,
+      normalizedRequestHost,
+      configuredNextAuthUrl: configured,
+      configuredOrigin: null as string | null,
+      usingConfigured: false,
+      hostMatches: false,
+      parseError: error instanceof Error ? error.message : "Failed to parse NEXTAUTH_URL",
+    };
+  }
+}
+
+export function resolveShopifyBaseUrlFromRequest(request: NextRequest) {
+  return resolveShopifyBaseUrl({
+    requestProtocol: request.nextUrl.protocol,
+    requestHost: request.nextUrl.host,
+    configuredNextAuthUrl: process.env.NEXTAUTH_URL,
+  }).baseUrl;
+}
+
+export function resolveOAuthBaseUrl(request: NextRequest) {
+  return resolveShopifyBaseUrlFromRequest(request);
+}
+
+export function getShopifyBaseResolution(request: NextRequest) {
+  const resolved = resolveShopifyBaseUrl({
+    requestProtocol: request.nextUrl.protocol,
+    requestHost: request.nextUrl.host,
+    configuredNextAuthUrl: process.env.NEXTAUTH_URL,
+  });
+  return {
+    baseUrl: resolved.baseUrl,
+    requestOrigin: resolved.requestOrigin,
+    requestHost: resolved.normalizedRequestHost,
+    source: resolved.usingConfigured ? "NEXTAUTH_URL" : "request",
   };
 }
 
