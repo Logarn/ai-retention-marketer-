@@ -2,6 +2,16 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { syncShopifyData, syncShopifyDataDirectCredentials } from "@/lib/shopify";
 
+function sanitizeShopifyErrorMessage(message: string) {
+  return (
+    message
+      // Redact credential-in-URL patterns if any lower layer leaks them.
+      .replace(/https?:\/\/[^/\s:@]+:[^@\s]+@/gi, "https://[REDACTED]@")
+      // Redact basic auth blobs if surfaced.
+      .replace(/Basic\s+[A-Za-z0-9+/=]+/gi, "Basic [REDACTED]")
+  );
+}
+
 export async function POST() {
   try {
     console.log("[shopify-sync] POST /api/shopify/sync started");
@@ -69,7 +79,8 @@ export async function POST() {
       source: useDirectCredentials ? "shopify_direct_credentials" : "shopify_sync",
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown sync error";
+    const rawMessage = error instanceof Error ? error.message : "Unknown sync error";
+    const message = sanitizeShopifyErrorMessage(rawMessage);
     console.error("[shopify-sync] sync failed", error);
     await prisma.integrationState.upsert({
       where: { provider: "shopify" },

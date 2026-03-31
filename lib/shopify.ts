@@ -192,18 +192,23 @@ async function fetchAllFromShopifyDirectCredentials(): Promise<ShopifyRestPayloa
     throw new Error("Direct Shopify credentials missing (SHOPIFY_CLIENT_ID / SHOPIFY_CLIENT_SECRET).");
   }
 
-  const encodedId = encodeURIComponent(clientId);
-  const encodedSecret = encodeURIComponent(clientSecret);
-  const base = `https://${encodedId}:${encodedSecret}@${store}.myshopify.com/admin/api/2024-01`;
+  const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+  const base = `https://${store}.myshopify.com/admin/api/2024-01`;
   console.log("[shopify] Starting direct credentials REST fetch", {
     store,
     endpointTemplate: DIRECT_SHOPIFY_REST_CUSTOMERS_ENDPOINT_TEMPLATE,
   });
 
   const [customersResp, ordersResp, productsResp] = await Promise.all([
-    fetch(`${base}/customers.json?limit=250`),
-    fetch(`${base}/orders.json?status=any&limit=250`),
-    fetch(`${base}/products.json?limit=250`),
+    fetch(`${base}/customers.json?limit=250`, {
+      headers: { Authorization: `Basic ${basicAuth}` },
+    }),
+    fetch(`${base}/orders.json?status=any&limit=250`, {
+      headers: { Authorization: `Basic ${basicAuth}` },
+    }),
+    fetch(`${base}/products.json?limit=250`, {
+      headers: { Authorization: `Basic ${basicAuth}` },
+    }),
   ]);
 
   if (!customersResp.ok || !ordersResp.ok || !productsResp.ok) {
@@ -212,8 +217,19 @@ async function fetchAllFromShopifyDirectCredentials(): Promise<ShopifyRestPayloa
       ordersResp.text(),
       productsResp.text(),
     ]);
+    const statusSummary = `customers=${customersResp.status}, orders=${ordersResp.status}, products=${productsResp.status}`;
+    if (
+      customersResp.status === 401 ||
+      ordersResp.status === 401 ||
+      productsResp.status === 401
+    ) {
+      throw new Error(
+        `Direct credential authentication rejected by Shopify (${statusSummary}). ` +
+          "Use Connect Shopify (OAuth) or configure SHOPIFY_ACCESS_TOKEN.",
+      );
+    }
     throw new Error(
-      `Direct credentials REST fetch failed (customers=${customersResp.status}, orders=${ordersResp.status}, products=${productsResp.status}). ` +
+      `Direct credentials REST fetch failed (${statusSummary}). ` +
         `Details: customers=${customersText.slice(0, 220)} orders=${ordersText.slice(0, 220)} products=${productsText.slice(0, 220)}`,
     );
   }
