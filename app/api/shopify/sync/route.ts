@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { syncShopifyData, syncShopifyDataDirectCredentials } from "@/lib/shopify";
+import { syncShopifyData } from "@/lib/shopify";
 
 function sanitizeShopifyErrorMessage(message: string) {
   return (
@@ -18,15 +18,42 @@ export async function POST() {
     const state = await prisma.integrationState.findUnique({
       where: { provider: "shopify" },
     });
-    const token = state?.accessToken || process.env.SHOPIFY_ACCESS_TOKEN;
+    const token =
+      state?.accessToken ||
+      process.env.SHOPIFY_ACCESS_TOKEN ||
+      process.env.SHOPIFY_ADMIN_ACCESS_TOKEN;
     console.log("[shopify-sync] token availability", {
       hasStateToken: Boolean(state?.accessToken),
       hasEnvToken: Boolean(process.env.SHOPIFY_ACCESS_TOKEN),
       connected: state?.connected ?? false,
     });
-    const useDirectCredentials = !token;
-    if (useDirectCredentials) {
-      console.log("[shopify-sync] no OAuth/access token found, using direct credentials mode");
+    if (!token) {
+      const detail =
+        "Shopify Admin token is missing. Connect Shopify (OAuth) or configure SHOPIFY_ACCESS_TOKEN.";
+      await prisma.integrationState.upsert({
+        where: { provider: "shopify" },
+        create: {
+          provider: "shopify",
+          connected: false,
+          syncInProgress: false,
+          lastSyncStatus: "needs_connection",
+          lastSyncMessage: detail,
+        },
+        update: {
+          connected: false,
+          syncInProgress: false,
+          lastSyncStatus: "needs_connection",
+          lastSyncMessage: detail,
+        },
+      });
+      return NextResponse.json(
+        {
+          error: "Shopify connection required",
+          detail,
+          code: "SHOPIFY_TOKEN_REQUIRED",
+        },
+        { status: 400 },
+      );
     }
 
     await prisma.integrationState.upsert({
@@ -34,27 +61,21 @@ export async function POST() {
       create: {
         provider: "shopify",
         connected: true,
-        accessToken: token ?? null,
+        accessToken: token,
         syncInProgress: true,
         lastSyncStatus: "in_progress",
-        lastSyncMessage: useDirectCredentials
-          ? "Sync started (direct credentials mode)"
-          : "Sync started",
+        lastSyncMessage: "Sync started",
       },
       update: {
         connected: true,
-        accessToken: token ?? undefined,
+        accessToken: token,
         syncInProgress: true,
         lastSyncStatus: "in_progress",
-        lastSyncMessage: useDirectCredentials
-          ? "Sync started (direct credentials mode)"
-          : "Sync started",
+        lastSyncMessage: "Sync started",
       },
     });
 
-    const result = useDirectCredentials
-      ? await syncShopifyDataDirectCredentials()
-      : await syncShopifyData(token);
+    const result = await syncShopifyData(token);
     console.log("[shopify-sync] sync completed", result);
 
     await prisma.integrationState.update({
@@ -63,9 +84,7 @@ export async function POST() {
         syncInProgress: false,
         lastSyncAt: new Date(),
         lastSyncStatus: "success",
-        lastSyncMessage: `Synced ${result.customersUpserted} customers, ${result.ordersUpserted} orders, ${result.productsUpserted} products${
-          useDirectCredentials ? " (direct credentials mode)" : ""
-        }`,
+        lastSyncMessage: `Synced ${result.customersUpserted} customers, ${result.ordersUpserted} orders, ${result.productsUpserted} products`,
       },
     });
 
@@ -76,7 +95,7 @@ export async function POST() {
         orders: result.ordersUpserted,
         products: result.productsUpserted,
       },
-      source: useDirectCredentials ? "shopify_direct_credentials" : "shopify_sync",
+      source: "shopify_sync",
     });
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : "Unknown sync error";
@@ -101,11 +120,15 @@ export async function POST() {
       {
         error: "Shopify sync failed",
         detail: message,
+        code: /401|unauthorized|invalid.*token/i.test(message)
+          ? "SHOPIFY_TOKEN_INVALID"
+          : "SHOPIFY_SYNC_ERROR",
         debug: {
           hasStore: Boolean(process.env.SHOPIFY_STORE_NAME),
           hasClientId: Boolean(process.env.SHOPIFY_CLIENT_ID),
           hasClientSecret: Boolean(process.env.SHOPIFY_CLIENT_SECRET),
           hasAccessToken: Boolean(process.env.SHOPIFY_ACCESS_TOKEN),
+          hasAdminAccessToken: Boolean(process.env.SHOPIFY_ADMIN_ACCESS_TOKEN),
         },
       },
       { status: 500 },

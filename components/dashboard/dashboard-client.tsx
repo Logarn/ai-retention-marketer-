@@ -175,6 +175,15 @@ export function DashboardClient() {
       const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
       console.log("[dashboard] Shopify sync response", json);
       if (!response.ok) {
+        if (
+          typeof json.detail === "string" &&
+          (json.detail.includes("Connect Shopify") || json.detail.includes("SHOPIFY_ACCESS_TOKEN"))
+        ) {
+          setIntegrationMessage("Shopify is not connected. Redirecting to Connect Shopify...");
+          alert("Shopify is not connected yet. Redirecting to Connect Shopify now.");
+          window.location.href = "/api/auth/shopify";
+          return;
+        }
         throw new Error(extractApiError(json, "Shopify sync failed"));
       }
       setIntegrationMessage(
