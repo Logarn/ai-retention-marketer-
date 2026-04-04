@@ -5,6 +5,9 @@ import { groqClient, GROQ_MODEL } from "@/lib/ai";
 
 const STORE_ID = "default";
 const MAX_PAGES = 8;
+const MAX_PAGE_MARKDOWN_CHARS = 5000;
+const MAX_COMBINED_MARKDOWN_CHARS = 30000;
+const GROQ_RETRY_ATTEMPTS = 3;
 
 const requestSchema = z.object({
   url: z.string().min(1),
@@ -63,6 +66,13 @@ type FirecrawlDoc = {
   links?: string[];
 };
 
+type ScrapedChunk = {
+  url: string;
+  label: string;
+  markdown: string;
+  order: number;
+};
+
 type ErrorDetail = {
   name?: string;
   message: string;
@@ -114,6 +124,127 @@ function extractMarkdownLinks(markdown: string) {
 
 function unique(values: string[]) {
   return Array.from(new Set(values));
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getErrorStatusCode(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const record = error as Record<string, unknown>;
+  const directStatus = record.status;
+  if (typeof directStatus === "number") return directStatus;
+  const response = record.response as Record<string, unknown> | undefined;
+  if (response && typeof response.status === "number") return response.status;
+  const nestedError = record.error as Record<string, unknown> | undefined;
+  if (nestedError && typeof nestedError.status === "number") return nestedError.status;
+  return undefined;
+}
+
+function stripBoilerplate(markdown: string) {
+  const lines = markdown.replace(/\r/g, "").split("\n");
+  const kept: string[] = [];
+  const seenShort = new Set<string>();
+  const boilerplatePattern =
+    /\b(cookie|privacy policy|terms(?: of service)?|all rights reserved|accept all|manage preferences|newsletter|subscribe|skip to content|back to top|powered by|wishlist|cart|login|my account|search)\b/i;
+  const navOnlyPattern = /^\s*(?:[-*]\s*)?\[[^\]]+\]\([^)]+\)\s*$/;
+
+  for (const raw of lines) {
+    const compact = raw.replace(/\s+/g, " ").trim();
+    if (!compact) {
+      kept.push("");
+      continue;
+    }
+
+    const lower = compact.toLowerCase();
+    if ((compact.length <= 140 && boilerplatePattern.test(compact)) || (compact.length <= 100 && navOnlyPattern.test(compact))) {
+      continue;
+    }
+
+    if (compact.length <= 180) {
+      if (seenShort.has(lower)) continue;
+      seenShort.add(lower);
+    }
+
+    kept.push(raw.trimEnd());
+  }
+
+  // Collapse excessive blank lines.
+  const collapsed: string[] = [];
+  let blankCount = 0;
+  for (const line of kept) {
+    if (!line.trim()) {
+      blankCount += 1;
+      if (blankCount > 2) continue;
+      collapsed.push("");
+      continue;
+    }
+    blankCount = 0;
+    collapsed.push(line);
+  }
+
+  return collapsed.join("\n").trim();
+}
+
+function classifyChunkPriority(chunk: ScrapedChunk) {
+  const label = chunk.label.toLowerCase();
+  const pathname = (() => {
+    try {
+      return new URL(chunk.url).pathname.toLowerCase();
+    } catch {
+      return "";
+    }
+  })();
+
+  if (label.includes("homepage")) return 0;
+  if (label.includes("about") || pathname.includes("/about") || pathname.includes("/our-story")) return 1;
+  if (label.includes("product") || pathname.startsWith("/products/")) return 2;
+  if (label.includes("collections") || pathname.startsWith("/collections")) return 3;
+  if (label.includes("faq") || pathname.includes("/faq")) return 4;
+  return 5;
+}
+
+function prioritizeChunks(chunks: ScrapedChunk[]) {
+  const withPriority = chunks
+    .map((chunk) => ({ chunk, priority: classifyChunkPriority(chunk) }))
+    .sort((a, b) => (a.priority === b.priority ? a.chunk.order - b.chunk.order : a.priority - b.priority));
+
+  const homepage = withPriority.filter((item) => item.priority === 0).map((item) => item.chunk).slice(0, 1);
+  const about = withPriority.filter((item) => item.priority === 1).map((item) => item.chunk).slice(0, 1);
+  const products = withPriority.filter((item) => item.priority === 2).map((item) => item.chunk).slice(0, 3);
+  const collections = withPriority.filter((item) => item.priority === 3).map((item) => item.chunk).slice(0, 1);
+  const faq = withPriority.filter((item) => item.priority === 4).map((item) => item.chunk).slice(0, 1);
+  const other = withPriority.filter((item) => item.priority >= 5).map((item) => item.chunk);
+
+  return [...homepage, ...about, ...products, ...collections, ...faq, ...other];
+}
+
+function buildCombinedMarkdown(chunks: ScrapedChunk[], charBudget = MAX_COMBINED_MARKDOWN_CHARS) {
+  const prioritized = prioritizeChunks(chunks);
+  const joinChunks = (items: ScrapedChunk[]) =>
+    items.map((chunk) => `### ${chunk.label}\nURL: ${chunk.url}\n${chunk.markdown}`).join("\n\n---\n\n");
+
+  const totalBeforeTruncation = joinChunks(prioritized).length;
+  let selected = [...prioritized];
+  let combined = joinChunks(selected);
+
+  // Trim from the bottom of priority list first.
+  while (selected.length > 1 && combined.length > charBudget) {
+    selected = selected.slice(0, -1);
+    combined = joinChunks(selected);
+  }
+
+  if (combined.length > charBudget) {
+    combined = combined.slice(0, charBudget);
+  }
+
+  return {
+    combinedMarkdown: combined,
+    selectedChunks: selected,
+    totalBeforeTruncation,
+    totalAfterTruncation: combined.length,
+  };
 }
 
 function clampSlider(value: unknown) {
