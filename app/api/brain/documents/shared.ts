@@ -1,4 +1,3 @@
-import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 export type RuleItem = {
@@ -150,7 +149,7 @@ function normalizeRuleArray(input: unknown): RuleItem[] {
 
 export async function applyExtractedRulesToBrand(input: {
   brandProfileId: string;
-  extractedRules: Prisma.JsonValue | null;
+  extractedRules: unknown;
 }) {
   const rulesRecord = await ensureRulesRecord(input.brandProfileId);
   const payload = (input.extractedRules || {}) as {
