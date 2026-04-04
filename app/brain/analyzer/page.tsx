@@ -53,10 +53,25 @@ type PageResult = {
 };
 
 type AnalyzerResponse = {
-  analysis: Record<string, unknown>;
-  pagesCrawled: PageResult[];
-  totals: { success: number; failed: number };
-  normalizedUrl: string;
+  analysisData: Record<string, unknown>;
+  crawledPages: Array<{
+    url: string;
+    label?: string;
+    status: "success" | "failed";
+    error?: string;
+    chars?: number;
+    source?: "homepage" | "discovered" | "fallback";
+    contentLength?: number;
+  }>;
+  pagesAttempted?: number;
+  pagesSuccessful?: number;
+  normalizedUrl?: string;
+  source?: string;
+  error?: string;
+  step?: string;
+  detail?: string;
+  rawSnippet?: string;
+  totalCharsAnalyzed?: number;
 };
 
 type ApplySection =
@@ -199,8 +214,12 @@ export default function BrainAnalyzerPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: storeUrl.trim() }),
       });
-      const json = (await response.json().catch(() => ({}))) as AnalyzerResponse & { error?: string };
-      if (!response.ok) throw new Error(json.error || "Analyzer failed.");
+      const json = (await response.json().catch(() => ({}))) as AnalyzerResponse;
+      if (!response.ok) {
+        const stepLabel = json.step ? `[${json.step}] ` : "";
+        const detail = json.detail ? ` (${json.detail})` : "";
+        throw new Error(`${stepLabel}${json.error || "Analyzer failed."}${detail}`);
+      }
       setAnalysisResult(json);
       setProgressIndex(PROGRESS_STEPS.length - 1);
     } catch (analyzeError) {
@@ -221,7 +240,7 @@ export default function BrainAnalyzerPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          analysisData: analysisResult.analysis,
+          analysisData: analysisResult.analysisData,
           sections: selectedSectionList,
         }),
       });
@@ -235,8 +254,8 @@ export default function BrainAnalyzerPage() {
     }
   }
 
-  const analysis = analysisResult?.analysis ?? {};
-  const pages = analysisResult?.pagesCrawled ?? [];
+  const analysis = analysisResult?.analysisData ?? {};
+  const pages = analysisResult?.crawledPages ?? [];
   const successfulPages = pages.filter((page) => page.status === "success");
   const failedPages = pages.filter((page) => page.status === "failed");
   const urlForAnalysis = normalizeUrl(storeUrl);
@@ -338,7 +357,7 @@ export default function BrainAnalyzerPage() {
                   <Badge variant={page.status === "success" ? "success" : "destructive"}>{page.status}</Badge>
                 </div>
                 <p className="mt-1 text-xs text-zinc-500">
-                  Source: {page.source} • Content length: {page.contentLength}
+                  Source: {page.source ?? "n/a"} • Content length: {page.contentLength ?? page.chars ?? 0}
                 </p>
                 {page.error ? <p className="mt-1 text-xs text-red-300">{page.error}</p> : null}
               </div>
@@ -569,6 +588,14 @@ export default function BrainAnalyzerPage() {
                 Review Brand Profile <ChevronRight className="h-3 w-3" />
               </Link>
             </div>
+          ) : null}
+          {analysisResult?.rawSnippet ? (
+            <details className="rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3">
+              <summary className="cursor-pointer text-xs text-zinc-300">Model response snippet</summary>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-zinc-400">
+                {analysisResult.rawSnippet}
+              </pre>
+            </details>
           ) : null}
         </div>
       ) : null}

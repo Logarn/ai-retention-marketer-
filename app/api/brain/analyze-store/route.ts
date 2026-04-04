@@ -63,6 +63,13 @@ type FirecrawlDoc = {
   links?: string[];
 };
 
+type ErrorDetail = {
+  name?: string;
+  message: string;
+  stack?: string;
+  cause?: unknown;
+};
+
 function normalizeInputUrl(input: string) {
   const trimmed = input.trim();
   const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
@@ -217,6 +224,29 @@ function parseAnalysis(raw: string) {
   }
 }
 
+function toErrorDetail(error: unknown): ErrorDetail {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+      cause: error.cause,
+    };
+  }
+  return {
+    message: typeof error === "string" ? error : "Unknown error",
+    cause: error,
+  };
+}
+
+function logStepError(step: string, error: unknown, context?: Record<string, unknown>) {
+  const detail = toErrorDetail(error);
+  console.error(`[analyze-store][${step}]`, {
+    ...context,
+    error: detail,
+  });
+}
+
 async function scrapePage(
   firecrawl: Firecrawl,
   url: string,
@@ -228,12 +258,21 @@ async function scrapePage(
   if (pages.length >= MAX_PAGES) return false;
   try {
     const response = (await firecrawl.v1.scrapeUrl(url, { formats: ["markdown"] })) as FirecrawlDoc;
+    console.log("[analyze-store][scrape] response", {
+      url,
+      label,
+      success: response.success ?? true,
+      error: response.error ?? null,
+      markdownLength: response.markdown?.length ?? 0,
+      linkCount: response.links?.length ?? 0,
+    });
+
     if (response.success === false || response.error) {
       pages.push({
         url,
         label,
         status: "failed",
-        error: response.error || "Firecrawl failed",
+        error: `Firecrawl scrape failed: ${response.error || "Unknown Firecrawl error"}`,
       });
       return false;
     }
@@ -253,7 +292,7 @@ async function scrapePage(
         url,
         label,
         status: "failed",
-        error: "No markdown content returned",
+        error: "Firecrawl returned no markdown content for this page",
       });
       return false;
     }
@@ -272,11 +311,12 @@ async function scrapePage(
     });
     return true;
   } catch (error) {
+    logStepError("scrape-page", error, { url, label });
     pages.push({
       url,
       label,
       status: "failed",
-      error: error instanceof Error ? error.message : "Unknown scrape error",
+      error: `Firecrawl exception: ${error instanceof Error ? error.message : "Unknown scrape error"}`,
     });
     return false;
   }
@@ -295,116 +335,120 @@ export async function POST(request: Request) {
     );
   }
 
-  const { normalized, origin } = normalizeInputUrl(parsedBody.data.url);
-  const firecrawl = new Firecrawl({ apiKey: process.env.FIRECRAWL_API_KEY });
+  try {
+    const { normalized, origin } = normalizeInputUrl(parsedBody.data.url);
+    const firecrawl = new Firecrawl({ apiKey: process.env.FIRECRAWL_API_KEY });
 
-  const pages: PageResult[] = [];
-  const markdownChunks: Array<{ url: string; label: string; markdown: string }> = [];
-  const discoveredLinks = new Set<string>();
-  const queued = new Set<string>();
+    const pages: PageResult[] = [];
+    const markdownChunks: Array<{ url: string; label: string; markdown: string }> = [];
+    const discoveredLinks = new Set<string>();
+    const queued = new Set<string>();
 
-  const queueScrape = async (candidate: string | null, label: string) => {
-    if (!candidate) return false;
-    if (queued.has(candidate)) return false;
-    queued.add(candidate);
-    return scrapePage(firecrawl, candidate, label, pages, markdownChunks, discoveredLinks);
-  };
+    const queueScrape = async (candidate: string | null, label: string) => {
+      if (!candidate) return false;
+      if (queued.has(candidate)) return false;
+      queued.add(candidate);
+      return scrapePage(firecrawl, candidate, label, pages, markdownChunks, discoveredLinks);
+    };
 
-  const normalizedDiscovered = () =>
-    unique(
-      Array.from(discoveredLinks)
-        .map((link) => normalizeDiscoveredUrl(link, origin))
-        .filter((v): v is string => Boolean(v)),
-    );
+    const normalizedDiscovered = () =>
+      unique(
+        Array.from(discoveredLinks)
+          .map((link) => normalizeDiscoveredUrl(link, origin))
+          .filter((v): v is string => Boolean(v)),
+      );
 
-  // 1) Homepage
-  await queueScrape(normalized, "Homepage");
+    // 1) Homepage
+    await queueScrape(normalized, "Homepage");
 
-  // 2) About page attempts
-  const aboutPatterns = ["/pages/about", "/pages/about-us", "/pages/our-story", "/about", "/about-us"];
-  const discoveredAfterHome = normalizedDiscovered();
-  const aboutFromLinks =
-    discoveredAfterHome.find((link) =>
-      aboutPatterns.some((path) => new URL(link).pathname.toLowerCase().startsWith(path)),
-    ) ?? null;
-  let aboutScraped = await queueScrape(aboutFromLinks, "About page");
-  if (!aboutScraped) {
-    for (const path of aboutPatterns) {
-      if (pages.length >= MAX_PAGES || aboutScraped) break;
-      aboutScraped = await queueScrape(new URL(path, origin).toString(), "About page");
+    // 2) About page attempts
+    const aboutPatterns = ["/pages/about", "/pages/about-us", "/pages/our-story", "/about", "/about-us"];
+    const discoveredAfterHome = normalizedDiscovered();
+    const aboutFromLinks =
+      discoveredAfterHome.find((link) =>
+        aboutPatterns.some((path) => new URL(link).pathname.toLowerCase().startsWith(path)),
+      ) ?? null;
+    let aboutScraped = await queueScrape(aboutFromLinks, "About page");
+    if (!aboutScraped) {
+      for (const path of aboutPatterns) {
+        if (pages.length >= MAX_PAGES || aboutScraped) break;
+        aboutScraped = await queueScrape(new URL(path, origin).toString(), "About page");
+      }
     }
-  }
 
-  // 3) Collections
-  const discoveredAfterAbout = normalizedDiscovered();
-  const collectionsFromLinks =
-    discoveredAfterAbout.find((link) => {
-      const pathname = new URL(link).pathname.toLowerCase();
-      return pathname === "/collections" || pathname.startsWith("/collections/");
-    }) ?? null;
-  let collectionsScraped = await queueScrape(collectionsFromLinks, "Collections page");
-  if (!collectionsScraped) {
-    collectionsScraped = await queueScrape(new URL("/collections", origin).toString(), "Collections page");
-  }
-
-  // 4) FAQ page
-  const faqFromLinks =
-    normalizedDiscovered().find((link) => {
-      const pathname = new URL(link).pathname.toLowerCase();
-      return pathname === "/pages/faq" || pathname === "/faq";
-    }) ?? null;
-  await queueScrape(faqFromLinks ?? new URL("/pages/faq", origin).toString(), "FAQ page");
-
-  // 5) Product pages (3-4 target, still capped at max pages total)
-  const scrapeProductLinks = async () => {
-    const products = normalizedDiscovered().filter((link) =>
-      new URL(link).pathname.toLowerCase().startsWith("/products/"),
-    );
-    for (const product of products.slice(0, 4)) {
-      if (pages.length >= MAX_PAGES) break;
-      await queueScrape(product, "Product page");
+    // 3) Collections
+    const discoveredAfterAbout = normalizedDiscovered();
+    const collectionsFromLinks =
+      discoveredAfterAbout.find((link) => {
+        const pathname = new URL(link).pathname.toLowerCase();
+        return pathname === "/collections" || pathname.startsWith("/collections/");
+      }) ?? null;
+    let collectionsScraped = await queueScrape(collectionsFromLinks, "Collections page");
+    if (!collectionsScraped) {
+      collectionsScraped = await queueScrape(new URL("/collections", origin).toString(), "Collections page");
     }
-  };
 
-  await scrapeProductLinks();
+    // 4) FAQ page
+    const faqFromLinks =
+      normalizedDiscovered().find((link) => {
+        const pathname = new URL(link).pathname.toLowerCase();
+        return pathname === "/pages/faq" || pathname === "/faq";
+      }) ?? null;
+    await queueScrape(faqFromLinks ?? new URL("/pages/faq", origin).toString(), "FAQ page");
 
-  // If still missing product pages, try /collections/all once and discover products.
-  const successfulProductCount = pages.filter((p) => p.label === "Product page" && p.status === "success").length;
-  if (successfulProductCount < 3 && pages.length < MAX_PAGES) {
-    await queueScrape(new URL("/collections/all", origin).toString(), "Collections all");
+    // 5) Product pages (3-4 target, still capped at max pages total)
+    const scrapeProductLinks = async () => {
+      const products = normalizedDiscovered().filter((link) =>
+        new URL(link).pathname.toLowerCase().startsWith("/products/"),
+      );
+      for (const product of products.slice(0, 4)) {
+        if (pages.length >= MAX_PAGES) break;
+        await queueScrape(product, "Product page");
+      }
+    };
+
     await scrapeProductLinks();
-  }
 
-  const successfulMarkdown = markdownChunks.length;
-  if (successfulMarkdown === 0) {
-    return NextResponse.json(
-      {
-        error: "Unable to scrape store content.",
-        crawledPages: pages,
-      },
-      { status: 502 },
-    );
-  }
+    // If still missing product pages, try /collections/all once and discover products.
+    const successfulProductCount = pages.filter((p) => p.label === "Product page" && p.status === "success").length;
+    if (successfulProductCount < 3 && pages.length < MAX_PAGES) {
+      await queueScrape(new URL("/collections/all", origin).toString(), "Collections all");
+      await scrapeProductLinks();
+    }
 
-  if (!groqClient) {
-    return NextResponse.json(
-      {
-        error: "GROQ_API_KEY is not configured.",
-        crawledPages: pages,
-      },
-      { status: 500 },
-    );
-  }
+    const successfulMarkdown = markdownChunks.length;
+    if (successfulMarkdown === 0) {
+      console.error("[analyze-store][scrape] no successful markdown pages", { pages });
+      return NextResponse.json(
+        {
+          error: "Scrape step failed: no page markdown was retrieved from Firecrawl.",
+          step: "scrape",
+          crawledPages: pages,
+        },
+        { status: 502 },
+      );
+    }
 
-  const combinedMarkdown = markdownChunks
-    .map(
-      (chunk) =>
-        `### ${chunk.label}\nURL: ${chunk.url}\n${chunk.markdown.slice(0, 7000)}`,
-    )
-    .join("\n\n---\n\n")
-    .slice(0, 42000);
+    if (!groqClient) {
+      return NextResponse.json(
+        {
+          error: "GROQ_API_KEY is not configured.",
+          step: "llm",
+          crawledPages: pages,
+        },
+        { status: 500 },
+      );
+    }
 
-  const systemPrompt = `You are a brand analyst. Analyze the following website content and extract structured brand knowledge. Return ONLY valid JSON with these fields:
+    const combinedMarkdown = markdownChunks
+      .map(
+        (chunk) =>
+          `### ${chunk.label}\nURL: ${chunk.url}\n${chunk.markdown.slice(0, 7000)}`,
+      )
+      .join("\n\n---\n\n")
+      .slice(0, 42000);
+
+    const systemPrompt = `You are a brand analyst. Analyze the following website content and extract structured brand knowledge. Return ONLY valid JSON with these fields:
 
 {
   "brandName": "extracted brand name",
@@ -444,39 +488,108 @@ export async function POST(request: Request) {
   "competitivePositioning": "how the brand positions itself in the market"
 }`;
 
-  const completion = await groqClient.chat.completions.create({
-    model: GROQ_MODEL,
-    temperature: 0.2,
-    max_completion_tokens: 2600,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: systemPrompt },
-      {
-        role: "user",
-        content: `Store URL: ${normalized}\nStore ID: ${STORE_ID}\n\nWebsite content:\n${combinedMarkdown}`,
-      },
-    ],
-  });
+    let completion: Awaited<ReturnType<typeof groqClient.chat.completions.create>>;
+    try {
+      completion = await groqClient.chat.completions.create({
+        model: GROQ_MODEL,
+        temperature: 0.2,
+        max_completion_tokens: 2600,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "user",
+            content: `Store URL: ${normalized}\nStore ID: ${STORE_ID}\n\nWebsite content:\n${combinedMarkdown}`,
+          },
+        ],
+      });
+    } catch (error) {
+      logStepError("llm-call", error, {
+        combinedMarkdownLength: combinedMarkdown.length,
+        pagesAttempted: pages.length,
+        pagesSuccessful: pages.filter((item) => item.status === "success").length,
+      });
+      return NextResponse.json(
+        {
+          error: `LLM step failed: ${error instanceof Error ? error.message : "Groq request failed."}`,
+          step: "llm",
+          crawledPages: pages,
+          diagnostics: {
+            combinedMarkdownLength: combinedMarkdown.length,
+            pagesAttempted: pages.length,
+            pagesSuccessful: pages.filter((item) => item.status === "success").length,
+          },
+        },
+        { status: 502 },
+      );
+    }
 
-  const raw = completion.choices[0]?.message?.content?.trim() ?? "";
-  const parsed = parseAnalysis(raw);
-  if (!parsed) {
+    const raw = completion.choices[0]?.message?.content?.trim() ?? "";
+    if (!raw) {
+      console.error("[analyze-store][llm] empty model response", {
+        choices: completion.choices?.length ?? 0,
+      });
+      return NextResponse.json(
+        {
+          error: "LLM step failed: model returned an empty response.",
+          step: "llm",
+          crawledPages: pages,
+        },
+        { status: 502 },
+      );
+    }
+
+    let parsed: Partial<AnalysisData> | null = null;
+    try {
+      parsed = parseAnalysis(raw);
+    } catch (error) {
+      logStepError("json-parse-exception", error, {
+        rawLength: raw.length,
+        rawSnippet: raw.slice(0, 800),
+      });
+      return NextResponse.json(
+        {
+          error: `JSON parse step failed: ${error instanceof Error ? error.message : "Parser exception."}`,
+          step: "json_parse",
+          crawledPages: pages,
+          rawSnippet: raw.slice(0, 2000),
+        },
+        { status: 502 },
+      );
+    }
+
+    if (!parsed) {
+      console.error("[analyze-store][json-parse] unable to parse model JSON", {
+        rawLength: raw.length,
+        rawSnippet: raw.slice(0, 800),
+      });
+      return NextResponse.json(
+        {
+          error: "JSON parse step failed: model output was not valid JSON.",
+          step: "json_parse",
+          crawledPages: pages,
+          rawSnippet: raw.slice(0, 2000),
+        },
+        { status: 502 },
+      );
+    }
+
+    const analysisData = normalizeAnalysis(parsed);
+    return NextResponse.json({
+      analysisData,
+      crawledPages: pages,
+      pagesAttempted: pages.length,
+      pagesSuccessful: pages.filter((item) => item.status === "success").length,
+      source: "groq",
+    });
+  } catch (error) {
+    logStepError("unhandled", error, { inputUrl: parsedBody.data.url });
     return NextResponse.json(
       {
-        error: "Unable to parse analyzer JSON from model output.",
-        crawledPages: pages,
-        rawSnippet: raw.slice(0, 2000),
+        error: `Analyzer failed: ${error instanceof Error ? error.message : "Unknown server error."}`,
+        step: "unhandled",
       },
-      { status: 502 },
+      { status: 500 },
     );
   }
-
-  const analysisData = normalizeAnalysis(parsed);
-  return NextResponse.json({
-    analysisData,
-    crawledPages: pages,
-    pagesAttempted: pages.length,
-    pagesSuccessful: pages.filter((item) => item.status === "success").length,
-    source: "groq",
-  });
 }
