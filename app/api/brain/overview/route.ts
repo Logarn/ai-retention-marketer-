@@ -132,6 +132,12 @@ export async function GET() {
       alerts.push("Upload brand docs to accelerate intelligence extraction.");
     }
 
+    const toStatus = (score: number): "not_started" | "in_progress" | "complete" => {
+      if (score >= 100) return "complete";
+      if (score > 0) return "in_progress";
+      return "not_started";
+    };
+
     return NextResponse.json({
       profile: {
         id: profile.id,
@@ -149,6 +155,55 @@ export async function GET() {
       freshness: {
         lastUpdatedAt: profileUpdatedAt,
         status: freshnessStatus,
+      },
+      sections: {
+        overview: {
+          status:
+            requiredFieldsComplete >= requiredFieldsTotal
+              ? "complete"
+              : requiredFieldsComplete > 0
+                ? "in_progress"
+                : "not_started",
+          score: Math.round((requiredFieldsComplete / Math.max(1, requiredFieldsTotal)) * 100),
+        },
+        profile: {
+          status: toStatus(profileCompletion),
+          score: profileCompletion,
+        },
+        voice: {
+          status: toStatus(voiceCompletion),
+          score: voiceCompletion,
+        },
+        rules: {
+          status: toStatus(rulesCompletion),
+          score: rulesCompletion,
+        },
+        analyzer: {
+          status: profile.lastStoreAnalysis ? "in_progress" : "not_started",
+          score: profile.lastStoreAnalysis ? 20 : 0,
+          lastAnalyzedAt: profile.lastStoreAnalysis?.toISOString() ?? null,
+        },
+        documents: {
+          status:
+            profile.documents.length === 0
+              ? "not_started"
+              : profile.documents.some((doc) => doc.appliedToBrand)
+                ? "complete"
+                : "in_progress",
+          score:
+            profile.documents.length === 0
+              ? 0
+              : Math.min(
+                  100,
+                  Math.round(
+                    (profile.documents.filter((doc) => doc.appliedToBrand).length /
+                      Math.max(1, profile.documents.length)) *
+                      100,
+                  ),
+                ),
+          totalDocuments: profile.documents.length,
+          appliedDocuments: profile.documents.filter((doc) => doc.appliedToBrand).length,
+        },
       },
       quickStats: {
         personas: profile.personas.length,

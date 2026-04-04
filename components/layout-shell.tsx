@@ -2,7 +2,17 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, Bot, Brain, LayoutGrid, Megaphone, Users2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import {
+  BarChart3,
+  Bot,
+  Brain,
+  ChevronDown,
+  ChevronRight,
+  LayoutGrid,
+  Megaphone,
+  Users2,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -12,11 +22,27 @@ const navItems = [
   { href: "/campaigns", label: "Campaigns", icon: Megaphone },
   { href: "/composer", label: "AI Composer", icon: Bot },
   { href: "/templates", label: "Templates", icon: LayoutGrid },
-  { href: "/brain", label: "Brand Brain", icon: Brain },
+];
+
+const brainItems = [
+  { href: "/brain", label: "Overview" },
+  { href: "/brain/profile", label: "Brand Profile" },
+  { href: "/brain/voice", label: "Voice & Tone" },
+  { href: "/brain/rules", label: "Do's & Don'ts" },
+  { href: "/brain/analyzer", label: "Store Analyzer" },
+  { href: "/brain/documents", label: "Documents" },
+  { href: "/brain/test", label: "Voice Test" },
 ];
 
 export function LayoutShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const [brainExpanded, setBrainExpanded] = useState(pathname.startsWith("/brain"));
+
+  useEffect(() => {
+    if (pathname.startsWith("/brain")) {
+      setBrainExpanded(true);
+    }
+  }, [pathname]);
 
   return (
     <div className="min-h-screen">
@@ -46,6 +72,56 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
                 </Link>
               );
             })}
+
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={() => setBrainExpanded((previous) => !previous)}
+                className={cn(
+                  "flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm font-medium transition-colors",
+                  pathname.startsWith("/brain")
+                    ? "bg-[linear-gradient(135deg,rgba(255,123,66,0.22),rgba(245,158,11,0.2))] text-orange-100 ring-1 ring-orange-300/30"
+                    : "text-slate-300 hover:bg-white/5 hover:text-slate-100",
+                )}
+                aria-expanded={brainExpanded}
+                aria-controls="brain-subnav"
+              >
+                <span className="flex items-center gap-2.5">
+                  <Brain
+                    size={16}
+                    className={pathname.startsWith("/brain") ? "text-orange-300" : "text-slate-400"}
+                  />
+                  The Brain
+                </span>
+                {brainExpanded ? (
+                  <ChevronDown size={16} className="text-slate-400" />
+                ) : (
+                  <ChevronRight size={16} className="text-slate-400" />
+                )}
+              </button>
+
+              {brainExpanded ? (
+                <div id="brain-subnav" className="mt-1 space-y-1 border-l border-white/10 pl-3">
+                  {brainItems.map((item) => {
+                    const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+                    return (
+                      <Link
+                        key={item.href}
+                        href={item.href}
+                        className={cn(
+                          "flex items-center rounded-lg px-3 py-2 text-sm transition-colors",
+                          active
+                            ? "bg-white/10 text-orange-100"
+                            : "text-slate-300 hover:bg-white/5 hover:text-slate-100",
+                        )}
+                      >
+                        {item.label}
+                      </Link>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
           </nav>
           <div className="mt-6 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
             <p className="text-xs text-slate-400">Focus</p>

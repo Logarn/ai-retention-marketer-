@@ -1,4 +1,4 @@
-import type { BrandDocument, Prisma } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 export type RuleItem = {
@@ -188,7 +188,10 @@ function toIso(value: Date | null) {
   return value ? value.toISOString() : null;
 }
 
-export function mapDocumentResponse(doc: BrandDocument) {
+type BrandDocumentRow = Awaited<ReturnType<typeof prisma.brandDocument.findUnique>>;
+
+export function mapDocumentResponse(doc: BrandDocumentRow) {
+  if (!doc) return null;
   return {
     id: doc.id,
     brandProfileId: doc.brandProfileId,
