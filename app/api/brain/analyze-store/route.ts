@@ -143,12 +143,16 @@ function getErrorStatusCode(error: unknown): number | undefined {
 }
 
 function stripBoilerplate(markdown: string) {
-  const lines = markdown.replace(/\r/g, "").split("\n");
+  const linkAndMediaStripped = markdown
+    .replace(/!\[[^\]]*]\([^)]+\)/g, " ")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
+    .replace(/https?:\/\/\S+/g, " ");
+
+  const lines = linkAndMediaStripped.replace(/\r/g, "").split("\n");
   const kept: string[] = [];
   const seenShort = new Set<string>();
   const boilerplatePattern =
-    /\b(cookie|privacy policy|terms(?: of service)?|all rights reserved|accept all|manage preferences|newsletter|subscribe|skip to content|back to top|powered by|wishlist|cart|login|my account|search)\b/i;
-  const navOnlyPattern = /^\s*(?:[-*]\s*)?\[[^\]]+\]\([^)]+\)\s*$/;
+    /\b(cookie|privacy policy|terms(?: of service)?|all rights reserved|accept all|manage preferences|newsletter|subscribe|skip to content|back to top|powered by|wishlist|cart|login|my account|search|navigation|menu|footer)\b/i;
 
   for (const raw of lines) {
     const compact = raw.replace(/\s+/g, " ").trim();
@@ -158,19 +162,18 @@ function stripBoilerplate(markdown: string) {
     }
 
     const lower = compact.toLowerCase();
-    if ((compact.length <= 140 && boilerplatePattern.test(compact)) || (compact.length <= 100 && navOnlyPattern.test(compact))) {
+    if (compact.length <= 180 && boilerplatePattern.test(compact)) continue;
+    if (/^(home|shop|collections|products|about|faq|contact)\s*[>|/\\-]?/i.test(compact) && compact.length < 80) {
       continue;
     }
 
-    if (compact.length <= 180) {
+    if (compact.length <= 200) {
       if (seenShort.has(lower)) continue;
       seenShort.add(lower);
     }
-
     kept.push(raw.trimEnd());
   }
 
-  // Collapse excessive blank lines.
   const collapsed: string[] = [];
   let blankCount = 0;
   for (const line of kept) {
@@ -216,7 +219,6 @@ function prioritizeChunks(chunks: ScrapedChunk[]) {
   const collections = withPriority.filter((item) => item.priority === 3).map((item) => item.chunk).slice(0, 1);
   const faq = withPriority.filter((item) => item.priority === 4).map((item) => item.chunk).slice(0, 1);
   const other = withPriority.filter((item) => item.priority >= 5).map((item) => item.chunk);
-
   return [...homepage, ...about, ...products, ...collections, ...faq, ...other];
 }
 
@@ -229,15 +231,23 @@ function buildCombinedMarkdown(chunks: ScrapedChunk[], charBudget = MAX_COMBINED
   let selected = [...prioritized];
   let combined = joinChunks(selected);
 
-  // Trim from the bottom of priority list first.
   while (selected.length > 1 && combined.length > charBudget) {
     selected = selected.slice(0, -1);
     combined = joinChunks(selected);
   }
 
   if (combined.length > charBudget) {
-    combined = combined.slice(0, charBudget);
+    const homepage = prioritized.find((chunk) => classifyChunkPriority(chunk) === 0);
+    const about = prioritized.find((chunk) => classifyChunkPriority(chunk) === 1);
+    const product = prioritized.find((chunk) => classifyChunkPriority(chunk) === 2);
+    const strictMinimal = [homepage, about, product].filter((chunk): chunk is ScrapedChunk => Boolean(chunk));
+    if (strictMinimal.length) {
+      selected = strictMinimal;
+      combined = joinChunks(selected);
+    }
   }
+
+  if (combined.length > charBudget) combined = combined.slice(0, charBudget);
 
   return {
     combinedMarkdown: combined,
@@ -319,7 +329,6 @@ function normalizeAnalysis(input: Partial<AnalysisData>): AnalysisData {
 function extractJsonText(raw: string) {
   const trimmed = raw.trim();
   if (!trimmed) return null;
-
   const fencedBlocks = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/gi);
   if (fencedBlocks?.length) {
     for (const block of fencedBlocks) {
@@ -327,9 +336,7 @@ function extractJsonText(raw: string) {
       if (inner.startsWith("{") && inner.endsWith("}")) return inner;
     }
   }
-
   if (trimmed.startsWith("{") && trimmed.endsWith("}")) return trimmed;
-
   const firstBrace = trimmed.indexOf("{");
   if (firstBrace < 0) return null;
   let depth = 0;
@@ -341,7 +348,6 @@ function extractJsonText(raw: string) {
       if (depth === 0) return trimmed.slice(firstBrace, i + 1);
     }
   }
-
   return null;
 }
 
@@ -378,12 +384,36 @@ function logStepError(step: string, error: unknown, context?: Record<string, unk
   });
 }
 
+async function callGroqWithRetry(messages: Array<{ role: "system" | "user"; content: string }>) {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= GROQ_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return await groqClient!.chat.completions.create({
+        model: GROQ_MODEL,
+        temperature: 0.2,
+        max_completion_tokens: 1400,
+        response_format: { type: "json_object" },
+        messages,
+      });
+    } catch (error) {
+      lastError = error;
+      const status = getErrorStatusCode(error);
+      const retryable = status === 413 || status === 429;
+      if (!retryable || attempt === GROQ_RETRY_ATTEMPTS) break;
+      const delayMs = 2000 * 2 ** (attempt - 1);
+      console.warn("[analyze-store][llm-retry]", { attempt, status, delayMs });
+      await wait(delayMs);
+    }
+  }
+  throw lastError ?? new Error("Groq call failed after retries.");
+}
+
 async function scrapePage(
   firecrawl: Firecrawl,
   url: string,
   label: string,
   pages: PageResult[],
-  markdownChunks: Array<{ url: string; label: string; markdown: string }>,
+  markdownChunks: ScrapedChunk[],
   discoveredLinks: Set<string>,
 ) {
   if (pages.length >= MAX_PAGES) return false;
@@ -409,14 +439,8 @@ async function scrapePage(
     }
 
     const markdown = (response.markdown ?? "").trim();
-    const links = [
-      ...(response.links ?? []),
-      ...extractMarkdownLinks(markdown),
-    ];
-
-    for (const link of links) {
-      discoveredLinks.add(link);
-    }
+    const links = [...(response.links ?? []), ...extractMarkdownLinks(markdown)];
+    for (const link of links) discoveredLinks.add(link);
 
     if (!markdown) {
       pages.push({
@@ -435,10 +459,12 @@ async function scrapePage(
       chars: markdown.length,
     });
 
+    const cleaned = stripBoilerplate(markdown).slice(0, MAX_PAGE_MARKDOWN_CHARS);
     markdownChunks.push({
       url,
       label,
-      markdown: markdown.slice(0, 8000),
+      markdown: cleaned,
+      order: markdownChunks.length,
     });
     return true;
   } catch (error) {
@@ -460,10 +486,7 @@ export async function POST(request: Request) {
   }
 
   if (!process.env.FIRECRAWL_API_KEY) {
-    return NextResponse.json(
-      { error: "FIRECRAWL_API_KEY is not configured." },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: "FIRECRAWL_API_KEY is not configured." }, { status: 500 });
   }
 
   try {
@@ -471,7 +494,7 @@ export async function POST(request: Request) {
     const firecrawl = new Firecrawl({ apiKey: process.env.FIRECRAWL_API_KEY });
 
     const pages: PageResult[] = [];
-    const markdownChunks: Array<{ url: string; label: string; markdown: string }> = [];
+    const markdownChunks: ScrapedChunk[] = [];
     const discoveredLinks = new Set<string>();
     const queued = new Set<string>();
 
@@ -489,10 +512,8 @@ export async function POST(request: Request) {
           .filter((v): v is string => Boolean(v)),
       );
 
-    // 1) Homepage
     await queueScrape(normalized, "Homepage");
 
-    // 2) About page attempts
     const aboutPatterns = ["/pages/about", "/pages/about-us", "/pages/our-story", "/about", "/about-us"];
     const discoveredAfterHome = normalizedDiscovered();
     const aboutFromLinks =
@@ -507,7 +528,6 @@ export async function POST(request: Request) {
       }
     }
 
-    // 3) Collections
     const discoveredAfterAbout = normalizedDiscovered();
     const collectionsFromLinks =
       discoveredAfterAbout.find((link) => {
@@ -519,7 +539,6 @@ export async function POST(request: Request) {
       collectionsScraped = await queueScrape(new URL("/collections", origin).toString(), "Collections page");
     }
 
-    // 4) FAQ page
     const faqFromLinks =
       normalizedDiscovered().find((link) => {
         const pathname = new URL(link).pathname.toLowerCase();
@@ -527,7 +546,6 @@ export async function POST(request: Request) {
       }) ?? null;
     await queueScrape(faqFromLinks ?? new URL("/pages/faq", origin).toString(), "FAQ page");
 
-    // 5) Product pages (3-4 target, still capped at max pages total)
     const scrapeProductLinks = async () => {
       const products = normalizedDiscovered().filter((link) =>
         new URL(link).pathname.toLowerCase().startsWith("/products/"),
@@ -540,16 +558,13 @@ export async function POST(request: Request) {
 
     await scrapeProductLinks();
 
-    // If still missing product pages, try /collections/all once and discover products.
     const successfulProductCount = pages.filter((p) => p.label === "Product page" && p.status === "success").length;
     if (successfulProductCount < 3 && pages.length < MAX_PAGES) {
       await queueScrape(new URL("/collections/all", origin).toString(), "Collections all");
       await scrapeProductLinks();
     }
 
-    const successfulMarkdown = markdownChunks.length;
-    if (successfulMarkdown === 0) {
-      console.error("[analyze-store][scrape] no successful markdown pages", { pages });
+    if (markdownChunks.length === 0) {
       return NextResponse.json(
         {
           error: "Scrape step failed: no page markdown was retrieved from Firecrawl.",
@@ -571,147 +586,149 @@ export async function POST(request: Request) {
       );
     }
 
-    const combinedMarkdown = markdownChunks
-      .map(
-        (chunk) =>
-          `### ${chunk.label}\nURL: ${chunk.url}\n${chunk.markdown.slice(0, 7000)}`,
-      )
-      .join("\n\n---\n\n")
-      .slice(0, 42000);
+    const combinedMarkdownBundle = buildCombinedMarkdown(markdownChunks, MAX_COMBINED_MARKDOWN_CHARS);
+    const combinedMarkdown = combinedMarkdownBundle.combinedMarkdown;
 
-    const systemPrompt = `You are a brand analyst. Analyze the following website content and extract structured brand knowledge. Return ONLY valid JSON with these fields:
-
+    const identityPrompt = `You are a brand analyst. Analyze the website content and return ONLY valid JSON with these fields:
 {
-  "brandName": "extracted brand name",
-  "tagline": "extracted tagline or slogan if found",
-  "industry": "detected industry",
-  "niche": "specific niche within the industry",
-  "brandStory": "summarized brand story/about in 2-3 sentences",
-  "usp": "unique selling proposition — what makes them different",
-  "missionStatement": "mission or vision if found",
-  "targetDemographics": "who they sell to based on products and messaging",
-  "targetPsychographics": "values, lifestyle, interests of their target customer",
-  "audiencePainPoints": "what problems their customers have based on product descriptions",
-  "audienceDesires": "what their customers want/aspire to",
-  "voiceFormalCasual": number 0-100 (0=very formal, 100=very casual),
-  "voiceSeriousPlayful": number 0-100,
-  "voiceReservedEnthusiastic": number 0-100,
-  "voiceTechnicalSimple": number 0-100,
-  "voiceAuthoritativeApproachable": number 0-100,
-  "voiceMinimalDescriptive": number 0-100,
-  "voiceLuxuryAccessible": number 0-100,
-  "voiceEdgySafe": number 0-100,
-  "voiceEmotionalRational": number 0-100,
-  "voiceTrendyTimeless": number 0-100,
-  "voiceDescription": "2-3 sentence description of the overall brand voice",
-  "suggestedDos": ["rule 1", "rule 2", ...],
-  "suggestedDonts": ["rule 1", "rule 2", ...],
-  "suggestedCTAs": ["CTA 1", "CTA 2", ...],
-  "suggestedPreferredPhrases": ["phrase 1", ...],
-  "suggestedBannedPhrases": ["phrase 1", ...],
-  "greetingStyle": "formal" | "friendly" | "casual" | "none",
-  "signOffStyle": "warm" | "professional" | "casual" | "brand",
-  "emojiUsage": "never" | "sparingly" | "often",
-  "preferredLength": "short" | "medium" | "long",
-  "discountPhilosophy": "never" | "rarely" | "strategically" | "frequently",
-  "productsSummary": "brief summary of main products/categories found",
-  "priceRange": "detected price range",
-  "competitivePositioning": "how the brand positions itself in the market"
+  "brandName": "",
+  "tagline": "",
+  "industry": "",
+  "niche": "",
+  "brandStory": "",
+  "usp": "",
+  "missionStatement": "",
+  "targetDemographics": "",
+  "targetPsychographics": "",
+  "audiencePainPoints": "",
+  "audienceDesires": "",
+  "productsSummary": "",
+  "priceRange": "",
+  "competitivePositioning": ""
 }`;
 
-    let completion: Awaited<ReturnType<typeof groqClient.chat.completions.create>>;
+    const voicePrompt = `You are a brand voice analyst. Analyze the website content and return ONLY valid JSON with these fields:
+{
+  "voiceFormalCasual": 0,
+  "voiceSeriousPlayful": 0,
+  "voiceReservedEnthusiastic": 0,
+  "voiceTechnicalSimple": 0,
+  "voiceAuthoritativeApproachable": 0,
+  "voiceMinimalDescriptive": 0,
+  "voiceLuxuryAccessible": 0,
+  "voiceEdgySafe": 0,
+  "voiceEmotionalRational": 0,
+  "voiceTrendyTimeless": 0,
+  "voiceDescription": "",
+  "suggestedDos": [],
+  "suggestedDonts": [],
+  "suggestedCTAs": [],
+  "suggestedPreferredPhrases": [],
+  "suggestedBannedPhrases": [],
+  "greetingStyle": "formal|friendly|casual|none",
+  "signOffStyle": "warm|professional|casual|brand",
+  "emojiUsage": "never|sparingly|often",
+  "preferredLength": "short|medium|long",
+  "discountPhilosophy": "never|rarely|strategically|frequently"
+}`;
+
+    let identityCompletion: Awaited<ReturnType<typeof groqClient.chat.completions.create>>;
     try {
-      completion = await groqClient.chat.completions.create({
-        model: GROQ_MODEL,
-        temperature: 0.2,
-        max_completion_tokens: 2600,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: systemPrompt },
-          {
-            role: "user",
-            content: `Store URL: ${normalized}\nStore ID: ${STORE_ID}\n\nWebsite content:\n${combinedMarkdown}`,
-          },
-        ],
-      });
+      identityCompletion = await callGroqWithRetry([
+        { role: "system", content: identityPrompt },
+        {
+          role: "user",
+          content: `Store URL: ${normalized}\nStore ID: ${STORE_ID}\n\nWebsite content:\n${combinedMarkdown}`,
+        },
+      ]);
     } catch (error) {
-      logStepError("llm-call", error, {
+      logStepError("llm-call-identity", error, {
         combinedMarkdownLength: combinedMarkdown.length,
-        pagesAttempted: pages.length,
         pagesSuccessful: pages.filter((item) => item.status === "success").length,
       });
       return NextResponse.json(
         {
-          error: `LLM step failed: ${error instanceof Error ? error.message : "Groq request failed."}`,
-          step: "llm",
+          error: `LLM identity/audience step failed: ${error instanceof Error ? error.message : "Groq request failed."}`,
+          step: "llm_identity",
           crawledPages: pages,
-          diagnostics: {
-            combinedMarkdownLength: combinedMarkdown.length,
-            pagesAttempted: pages.length,
-            pagesSuccessful: pages.filter((item) => item.status === "success").length,
-          },
         },
         { status: 502 },
       );
     }
 
-    const raw = completion.choices[0]?.message?.content?.trim() ?? "";
-    if (!raw) {
-      console.error("[analyze-store][llm] empty model response", {
-        choices: completion.choices?.length ?? 0,
-      });
+    const identityRaw = identityCompletion.choices[0]?.message?.content?.trim() ?? "";
+    const identityData = identityRaw ? parseAnalysis(identityRaw) : null;
+    if (!identityData) {
       return NextResponse.json(
         {
-          error: "LLM step failed: model returned an empty response.",
-          step: "llm",
+          error: "LLM identity/audience step returned invalid JSON.",
+          step: "json_parse_identity",
           crawledPages: pages,
+          rawSnippet: identityRaw.slice(0, 2000),
         },
         { status: 502 },
       );
     }
 
-    let parsed: Partial<AnalysisData> | null = null;
+    await wait(5000);
+
+    let voiceCompletion: Awaited<ReturnType<typeof groqClient.chat.completions.create>>;
     try {
-      parsed = parseAnalysis(raw);
+      voiceCompletion = await callGroqWithRetry([
+        { role: "system", content: voicePrompt },
+        {
+          role: "user",
+          content: `Store URL: ${normalized}\nStore ID: ${STORE_ID}\n\nWebsite content:\n${combinedMarkdown}`,
+        },
+      ]);
     } catch (error) {
-      logStepError("json-parse-exception", error, {
-        rawLength: raw.length,
-        rawSnippet: raw.slice(0, 800),
+      logStepError("llm-call-voice", error, {
+        combinedMarkdownLength: combinedMarkdown.length,
       });
       return NextResponse.json(
         {
-          error: `JSON parse step failed: ${error instanceof Error ? error.message : "Parser exception."}`,
-          step: "json_parse",
+          error: `LLM voice/messaging step failed: ${error instanceof Error ? error.message : "Groq request failed."}`,
+          step: "llm_voice",
           crawledPages: pages,
-          rawSnippet: raw.slice(0, 2000),
         },
         { status: 502 },
       );
     }
 
-    if (!parsed) {
-      console.error("[analyze-store][json-parse] unable to parse model JSON", {
-        rawLength: raw.length,
-        rawSnippet: raw.slice(0, 800),
-      });
+    const voiceRaw = voiceCompletion.choices[0]?.message?.content?.trim() ?? "";
+    const voiceData = voiceRaw ? parseAnalysis(voiceRaw) : null;
+    if (!voiceData) {
       return NextResponse.json(
         {
-          error: "JSON parse step failed: model output was not valid JSON.",
-          step: "json_parse",
+          error: "LLM voice/messaging step returned invalid JSON.",
+          step: "json_parse_voice",
           crawledPages: pages,
-          rawSnippet: raw.slice(0, 2000),
+          rawSnippet: voiceRaw.slice(0, 2000),
         },
         { status: 502 },
       );
     }
 
-    const analysisData = normalizeAnalysis(parsed);
+    const analysisData = normalizeAnalysis({
+      ...identityData,
+      ...voiceData,
+    });
+
     return NextResponse.json({
       analysisData,
       crawledPages: pages,
       pagesAttempted: pages.length,
       pagesSuccessful: pages.filter((item) => item.status === "success").length,
       source: "groq",
+      diagnostics: {
+        totalBeforeTruncation: combinedMarkdownBundle.totalBeforeTruncation,
+        totalAfterTruncation: combinedMarkdownBundle.totalAfterTruncation,
+        selectedPages: combinedMarkdownBundle.selectedChunks.map((chunk) => ({
+          label: chunk.label,
+          url: chunk.url,
+          chars: chunk.markdown.length,
+        })),
+      },
     });
   } catch (error) {
     logStepError("unhandled", error, { inputUrl: parsedBody.data.url });
