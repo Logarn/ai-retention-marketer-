@@ -183,17 +183,54 @@ model ShopifySyncRun {
 }
 
 model BrandProfile {
-  id                   String               @id @default(cuid())
-  brandName            String
-  tagline              String?
-  industryVertical     String
-  pricePositioning     String
-  foundedYear          Int?
-  brandStory           String?
-  missionStatement     String?
-  coreValues           String[]
-  shopifyStoreUrl      String?
-  websiteUrl           String?
+  id          String   @id @default(cuid())
+  storeId     String   @unique @default("default")
+
+  // Core Identity
+  brandName        String?
+  tagline          String?
+  industry         String?
+  niche            String?
+  brandStory       String?
+  usp              String?
+  missionStatement String?
+  websiteUrl       String?
+
+  // Legacy compatibility fields
+  industryVertical String?
+  pricePositioning String?
+  foundedYear      Int?
+  coreValues       String[] @default([])
+  shopifyStoreUrl  String?
+
+  // Target Audience
+  targetDemographics   String?
+  targetPsychographics String?
+  audiencePainPoints   String?
+  audienceDesires      String?
+
+  // Voice & Tone — 10 preset dimensions (0-100)
+  voiceFormalCasual               Int @default(50)
+  voiceSeriousPlayful             Int @default(50)
+  voiceReservedEnthusiastic       Int @default(50)
+  voiceTechnicalSimple            Int @default(50)
+  voiceAuthoritativeApproachable  Int @default(50)
+  voiceMinimalDescriptive         Int @default(50)
+  voiceLuxuryAccessible           Int @default(50)
+  voiceEdgySafe                   Int @default(50)
+  voiceEmotionalRational          Int @default(50)
+  voiceTrendyTimeless             Int @default(50)
+
+  voiceDescription String?
+
+  // Email Preferences
+  greetingStyle       String? @default("friendly")
+  signOffStyle        String? @default("warm")
+  emojiUsage          String? @default("sparingly")
+  preferredLength     String? @default("medium")
+  discountPhilosophy  String? @default("strategically")
+
+  // Analysis and related entities
   lastStoreAnalysis    DateTime?
   storeAnalysisData    Json?
   voiceTone            VoiceTone?
@@ -204,8 +241,58 @@ model BrandProfile {
   personas             Persona[]
   sellingPoints        SellingPoint[]
   documents            BrandDocument[]
-  createdAt            DateTime             @default(now())
-  updatedAt            DateTime             @updatedAt
+
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+model CustomVoiceDimension {
+  id          String   @id @default(cuid())
+  storeId     String
+  leftLabel   String
+  rightLabel  String
+  description String?
+  value       Int      @default(50)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([storeId, createdAt])
+}
+
+model BrandCTA {
+  id          String   @id @default(cuid())
+  storeId     String
+  text        String
+  isPreferred Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@index([storeId, createdAt])
+}
+
+model BrandPhrase {
+  id          String   @id @default(cuid())
+  storeId     String
+  phrase      String
+  type        String
+  createdAt   DateTime @default(now())
+
+  @@index([storeId, type, createdAt])
+}
+
+model BrandRule {
+  id          String   @id @default(cuid())
+  storeId     String
+  rule        String
+  type        String
+  priority    String   @default("important")
+  createdAt   DateTime @default(now())
+
+  @@index([storeId, type, priority, createdAt])
+}
+
+model BrandProfileMeta {
+  id      String @id @default(cuid())
+  storeId String @unique
 }
 
 model Persona {
