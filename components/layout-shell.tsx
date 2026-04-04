@@ -27,11 +27,10 @@ const navItems = [
 const brainItems = [
   { href: "/brain", label: "Overview" },
   { href: "/brain/profile", label: "Brand Profile" },
-  { href: "/brain/voice", label: "Voice & Tone" },
-  { href: "/brain/rules", label: "Do's & Don'ts" },
   { href: "/brain/analyzer", label: "Store Analyzer" },
   { href: "/brain/documents", label: "Documents" },
   { href: "/brain/test", label: "Voice Test" },
+  { href: "/brain/competitors", label: "Competitors" },
 ];
 
 export function LayoutShell({ children }: { children: React.ReactNode }) {

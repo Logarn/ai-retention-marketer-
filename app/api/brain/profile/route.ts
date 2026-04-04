@@ -45,60 +45,118 @@ function normalizeSlider(value: unknown, fallback: number) {
   return Math.max(0, Math.min(100, Math.round(parsed)));
 }
 
+function hasOwn(input: object, key: keyof BrandProfilePayload) {
+  return Object.prototype.hasOwnProperty.call(input, key);
+}
+
 function normalizePayload(input: Partial<BrandProfilePayload>, existing?: { [key: string]: unknown }) {
   return {
-    brandName: normalizeText(input.brandName) ?? normalizeText(existing?.brandName) ?? null,
-    tagline: normalizeText(input.tagline),
-    industry: normalizeText(input.industry),
-    niche: normalizeText(input.niche),
-    brandStory: normalizeText(input.brandStory),
-    usp: normalizeText(input.usp),
-    missionStatement: normalizeText(input.missionStatement),
-    websiteUrl: normalizeText(input.websiteUrl),
-    targetDemographics: normalizeText(input.targetDemographics),
-    targetPsychographics: normalizeText(input.targetPsychographics),
-    audiencePainPoints: normalizeText(input.audiencePainPoints),
-    audienceDesires: normalizeText(input.audienceDesires),
-    voiceFormalCasual: normalizeSlider(input.voiceFormalCasual, Number(existing?.voiceFormalCasual ?? 50)),
-    voiceSeriousPlayful: normalizeSlider(
-      input.voiceSeriousPlayful,
-      Number(existing?.voiceSeriousPlayful ?? 50),
-    ),
-    voiceReservedEnthusiastic: normalizeSlider(
-      input.voiceReservedEnthusiastic,
-      Number(existing?.voiceReservedEnthusiastic ?? 50),
-    ),
-    voiceTechnicalSimple: normalizeSlider(
-      input.voiceTechnicalSimple,
-      Number(existing?.voiceTechnicalSimple ?? 50),
-    ),
-    voiceAuthoritativeApproachable: normalizeSlider(
-      input.voiceAuthoritativeApproachable,
-      Number(existing?.voiceAuthoritativeApproachable ?? 50),
-    ),
-    voiceMinimalDescriptive: normalizeSlider(
-      input.voiceMinimalDescriptive,
-      Number(existing?.voiceMinimalDescriptive ?? 50),
-    ),
-    voiceLuxuryAccessible: normalizeSlider(
-      input.voiceLuxuryAccessible,
-      Number(existing?.voiceLuxuryAccessible ?? 50),
-    ),
-    voiceEdgySafe: normalizeSlider(input.voiceEdgySafe, Number(existing?.voiceEdgySafe ?? 50)),
-    voiceEmotionalRational: normalizeSlider(
-      input.voiceEmotionalRational,
-      Number(existing?.voiceEmotionalRational ?? 50),
-    ),
-    voiceTrendyTimeless: normalizeSlider(
-      input.voiceTrendyTimeless,
-      Number(existing?.voiceTrendyTimeless ?? 50),
-    ),
-    voiceDescription: normalizeText(input.voiceDescription),
-    greetingStyle: normalizeText(input.greetingStyle) ?? "friendly",
-    signOffStyle: normalizeText(input.signOffStyle) ?? "warm",
-    emojiUsage: normalizeText(input.emojiUsage) ?? "sparingly",
-    preferredLength: normalizeText(input.preferredLength) ?? "medium",
-    discountPhilosophy: normalizeText(input.discountPhilosophy) ?? "strategically",
+    // Only normalize keys present in the incoming PATCH-like payload.
+    // This prevents auto-save blur updates from nulling unrelated columns.
+    ...(hasOwn(input, "brandName")
+      ? { brandName: normalizeText(input.brandName) ?? normalizeText(existing?.brandName) ?? null }
+      : {}),
+    ...(hasOwn(input, "tagline") ? { tagline: normalizeText(input.tagline) } : {}),
+    ...(hasOwn(input, "industry") ? { industry: normalizeText(input.industry) } : {}),
+    ...(hasOwn(input, "niche") ? { niche: normalizeText(input.niche) } : {}),
+    ...(hasOwn(input, "brandStory") ? { brandStory: normalizeText(input.brandStory) } : {}),
+    ...(hasOwn(input, "usp") ? { usp: normalizeText(input.usp) } : {}),
+    ...(hasOwn(input, "missionStatement") ? { missionStatement: normalizeText(input.missionStatement) } : {}),
+    ...(hasOwn(input, "websiteUrl") ? { websiteUrl: normalizeText(input.websiteUrl) } : {}),
+    ...(hasOwn(input, "targetDemographics")
+      ? { targetDemographics: normalizeText(input.targetDemographics) }
+      : {}),
+    ...(hasOwn(input, "targetPsychographics")
+      ? { targetPsychographics: normalizeText(input.targetPsychographics) }
+      : {}),
+    ...(hasOwn(input, "audiencePainPoints")
+      ? { audiencePainPoints: normalizeText(input.audiencePainPoints) }
+      : {}),
+    ...(hasOwn(input, "audienceDesires") ? { audienceDesires: normalizeText(input.audienceDesires) } : {}),
+    ...(hasOwn(input, "voiceFormalCasual")
+      ? { voiceFormalCasual: normalizeSlider(input.voiceFormalCasual, Number(existing?.voiceFormalCasual ?? 50)) }
+      : {}),
+    ...(hasOwn(input, "voiceSeriousPlayful")
+      ? {
+          voiceSeriousPlayful: normalizeSlider(
+            input.voiceSeriousPlayful,
+            Number(existing?.voiceSeriousPlayful ?? 50),
+          ),
+        }
+      : {}),
+    ...(hasOwn(input, "voiceReservedEnthusiastic")
+      ? {
+          voiceReservedEnthusiastic: normalizeSlider(
+            input.voiceReservedEnthusiastic,
+            Number(existing?.voiceReservedEnthusiastic ?? 50),
+          ),
+        }
+      : {}),
+    ...(hasOwn(input, "voiceTechnicalSimple")
+      ? {
+          voiceTechnicalSimple: normalizeSlider(
+            input.voiceTechnicalSimple,
+            Number(existing?.voiceTechnicalSimple ?? 50),
+          ),
+        }
+      : {}),
+    ...(hasOwn(input, "voiceAuthoritativeApproachable")
+      ? {
+          voiceAuthoritativeApproachable: normalizeSlider(
+            input.voiceAuthoritativeApproachable,
+            Number(existing?.voiceAuthoritativeApproachable ?? 50),
+          ),
+        }
+      : {}),
+    ...(hasOwn(input, "voiceMinimalDescriptive")
+      ? {
+          voiceMinimalDescriptive: normalizeSlider(
+            input.voiceMinimalDescriptive,
+            Number(existing?.voiceMinimalDescriptive ?? 50),
+          ),
+        }
+      : {}),
+    ...(hasOwn(input, "voiceLuxuryAccessible")
+      ? {
+          voiceLuxuryAccessible: normalizeSlider(
+            input.voiceLuxuryAccessible,
+            Number(existing?.voiceLuxuryAccessible ?? 50),
+          ),
+        }
+      : {}),
+    ...(hasOwn(input, "voiceEdgySafe")
+      ? { voiceEdgySafe: normalizeSlider(input.voiceEdgySafe, Number(existing?.voiceEdgySafe ?? 50)) }
+      : {}),
+    ...(hasOwn(input, "voiceEmotionalRational")
+      ? {
+          voiceEmotionalRational: normalizeSlider(
+            input.voiceEmotionalRational,
+            Number(existing?.voiceEmotionalRational ?? 50),
+          ),
+        }
+      : {}),
+    ...(hasOwn(input, "voiceTrendyTimeless")
+      ? {
+          voiceTrendyTimeless: normalizeSlider(
+            input.voiceTrendyTimeless,
+            Number(existing?.voiceTrendyTimeless ?? 50),
+          ),
+        }
+      : {}),
+    ...(hasOwn(input, "voiceDescription") ? { voiceDescription: normalizeText(input.voiceDescription) } : {}),
+    ...(hasOwn(input, "greetingStyle")
+      ? { greetingStyle: normalizeText(input.greetingStyle) ?? "friendly" }
+      : {}),
+    ...(hasOwn(input, "signOffStyle")
+      ? { signOffStyle: normalizeText(input.signOffStyle) ?? "warm" }
+      : {}),
+    ...(hasOwn(input, "emojiUsage") ? { emojiUsage: normalizeText(input.emojiUsage) ?? "sparingly" } : {}),
+    ...(hasOwn(input, "preferredLength")
+      ? { preferredLength: normalizeText(input.preferredLength) ?? "medium" }
+      : {}),
+    ...(hasOwn(input, "discountPhilosophy")
+      ? { discountPhilosophy: normalizeText(input.discountPhilosophy) ?? "strategically" }
+      : {}),
   };
 }
 
@@ -123,13 +181,15 @@ export async function GET() {
         orderBy: { createdAt: "asc" },
       }),
     ]);
-    return NextResponse.json({
+    const payload = {
       profile,
       ctas,
       phrases,
       rules,
       customVoiceDimensions,
-    });
+    };
+    console.log("[brain/profile][GET] returning payload:", payload);
+    return NextResponse.json(payload);
   } catch (error) {
     return NextResponse.json(
       {
@@ -144,8 +204,10 @@ export async function GET() {
 export async function PUT(request: Request) {
   try {
     const body = (await request.json()) as Partial<BrandProfilePayload>;
+    console.log("[brain/profile][PUT] incoming body:", body);
     const existing = await ensureBrandProfileForStore();
     const normalized = normalizePayload(body, existing as unknown as { [key: string]: unknown });
+    console.log("[brain/profile][PUT] normalized update payload:", normalized);
     const updated = await prisma.brandProfile.upsert({
       where: { storeId: DEFAULT_STORE_ID },
       create: {
@@ -154,6 +216,7 @@ export async function PUT(request: Request) {
       },
       update: normalized,
     });
+    console.log("[brain/profile][PUT] updated profile:", updated);
     return NextResponse.json({ profile: updated });
   } catch (error) {
     return NextResponse.json(
