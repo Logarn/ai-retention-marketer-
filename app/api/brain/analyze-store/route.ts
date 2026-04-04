@@ -5,8 +5,8 @@ import { groqClient, GROQ_MODEL } from "@/lib/ai";
 
 const STORE_ID = "default";
 const MAX_PAGES = 8;
-const MAX_PAGE_MARKDOWN_CHARS = 5000;
-const MAX_COMBINED_MARKDOWN_CHARS = 30000;
+const MAX_PAGE_MARKDOWN_CHARS = 3000;
+const MAX_COMBINED_MARKDOWN_CHARS = 15000;
 const GROQ_RETRY_ATTEMPTS = 3;
 
 const requestSchema = z.object({
