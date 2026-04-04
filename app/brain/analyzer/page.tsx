@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import useSWR from "swr";
 import { CheckCircle2, Loader2, Search, Sparkles } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -36,11 +37,30 @@ const initialSteps: AnalyzerStep[] = [
   },
 ];
 
+type BrandProfileResponse = {
+  profile: {
+    shopifyUrl: string | null;
+  };
+};
+
+const fetcher = async (url: string) => {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+  return response.json();
+};
+
 export default function BrainAnalyzerPage() {
+  const { data: profileData } = useSWR<BrandProfileResponse>("/api/brain/profile", fetcher);
   const [storeUrl, setStoreUrl] = useState("");
   const [steps, setSteps] = useState<AnalyzerStep[]>(initialSteps);
   const [running, setRunning] = useState(false);
   const [complete, setComplete] = useState(false);
+
+  useEffect(() => {
+    // Preload analyzer URL from Brand Profile so crawl can start immediately.
+    if (!profileData?.profile.shopifyUrl) return;
+    setStoreUrl((current) => current || profileData.profile.shopifyUrl || "");
+  }, [profileData?.profile.shopifyUrl]);
 
   async function runMockAnalysis() {
     if (!storeUrl.trim()) return;

@@ -511,6 +511,15 @@ export default function BrainProfilePage() {
                 placeholder="https://example.com"
               />
             </div>
+            <div className="space-y-1">
+              <label className="text-xs text-zinc-400">Shopify Store URL</label>
+              <Input
+                value={state.shopifyUrl}
+                onChange={(event) => setState((prev) => (prev ? { ...prev, shopifyUrl: event.target.value } : prev))}
+                onBlur={() => void saveProfilePatch({ shopifyUrl: state.shopifyUrl })}
+                placeholder="e.g., your-store.myshopify.com"
+              />
+            </div>
           </div>
 
           <div className="space-y-1">
