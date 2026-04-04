@@ -45,24 +45,22 @@ type ProfilePayload = {
 };
 
 type BrandProfileResponse = {
-  profile: {
-    profile: ProfilePayload;
-    ctas: Array<{ id: string; text: string; isPreferred: boolean }>;
-    phrases: Array<{ id: string; phrase: string; type: "preferred" | "banned" }>;
-    rules: Array<{
-      id: string;
-      rule: string;
-      type: "do" | "dont";
-      priority: "critical" | "important" | "nice-to-have";
-    }>;
-    customVoiceDimensions: Array<{
-      id: string;
-      leftLabel: string;
-      rightLabel: string;
-      description: string | null;
-      value: number;
-    }>;
-  };
+  profile: ProfilePayload;
+  ctas: Array<{ id: string; text: string; isPreferred: boolean }>;
+  phrases: Array<{ id: string; phrase: string; type: "preferred" | "banned" }>;
+  rules: Array<{
+    id: string;
+    rule: string;
+    type: "do" | "dont";
+    priority: "critical" | "important" | "nice-to-have";
+  }>;
+  customVoiceDimensions: Array<{
+    id: string;
+    leftLabel: string;
+    rightLabel: string;
+    description: string | null;
+    value: number;
+  }>;
 };
 
 const fetcher = async (url: string) => {
@@ -250,15 +248,15 @@ export default function BrainProfilePage() {
   const [state, setState] = useState<LocalState | null>(null);
   const saveTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  const ctas = data?.profile.ctas ?? [];
-  const phrases = data?.profile.phrases ?? [];
-  const rules = data?.profile.rules ?? [];
-  const customVoiceDimensions = data?.profile.customVoiceDimensions ?? [];
+  const ctas = data?.ctas ?? [];
+  const phrases = data?.phrases ?? [];
+  const rules = data?.rules ?? [];
+  const customVoiceDimensions = data?.customVoiceDimensions ?? [];
 
   useEffect(() => {
-    if (!data?.profile.profile) return;
-    setState(toLocalState(data.profile.profile));
-  }, [data?.profile.profile]);
+    if (!data?.profile) return;
+    setState(toLocalState(data.profile));
+  }, [data?.profile]);
 
   function showSaved() {
     setNotice("Saved");
