@@ -195,6 +195,7 @@ model BrandProfile {
   usp              String?
   missionStatement String?
   websiteUrl       String?
+  shopifyUrl       String?
 
   // Legacy compatibility fields
   industryVertical String?

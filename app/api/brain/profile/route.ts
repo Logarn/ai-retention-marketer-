@@ -11,6 +11,7 @@ type BrandProfilePayload = {
   usp?: string | null;
   missionStatement?: string | null;
   websiteUrl?: string | null;
+  shopifyUrl?: string | null;
   targetDemographics?: string | null;
   targetPsychographics?: string | null;
   audiencePainPoints?: string | null;
@@ -63,6 +64,7 @@ function normalizePayload(input: Partial<BrandProfilePayload>, existing?: { [key
     ...(hasOwn(input, "usp") ? { usp: normalizeText(input.usp) } : {}),
     ...(hasOwn(input, "missionStatement") ? { missionStatement: normalizeText(input.missionStatement) } : {}),
     ...(hasOwn(input, "websiteUrl") ? { websiteUrl: normalizeText(input.websiteUrl) } : {}),
+    ...(hasOwn(input, "shopifyUrl") ? { shopifyUrl: normalizeText(input.shopifyUrl) } : {}),
     ...(hasOwn(input, "targetDemographics")
       ? { targetDemographics: normalizeText(input.targetDemographics) }
       : {}),

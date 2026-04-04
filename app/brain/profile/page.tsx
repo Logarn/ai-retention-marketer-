@@ -20,6 +20,7 @@ type ProfilePayload = {
   usp: string | null;
   missionStatement: string | null;
   websiteUrl: string | null;
+  shopifyUrl: string | null;
   targetDemographics: string | null;
   targetPsychographics: string | null;
   audiencePainPoints: string | null;
@@ -161,6 +162,7 @@ type LocalState = {
   industry: string;
   niche: string;
   websiteUrl: string;
+  shopifyUrl: string;
   brandStory: string;
   usp: string;
   missionStatement: string;
@@ -193,6 +195,7 @@ function toLocalState(input: ProfilePayload): LocalState {
     industry: input.industry ?? "",
     niche: input.niche ?? "",
     websiteUrl: input.websiteUrl ?? "",
+    shopifyUrl: input.shopifyUrl ?? "",
     brandStory: input.brandStory ?? "",
     usp: input.usp ?? "",
     missionStatement: input.missionStatement ?? "",
