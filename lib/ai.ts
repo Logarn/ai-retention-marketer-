@@ -92,11 +92,11 @@ Requirements:
 
   const response = await groqClient.chat.completions.create({
     model: GROQ_MODEL,
-    max_tokens: 700,
     temperature: 0.3,
+    max_completion_tokens: 700,
     messages: [{ role: "user", content: prompt }],
+    response_format: { type: "json_object" },
   });
-
   const raw = response.choices[0]?.message?.content?.trim() ?? "";
 
   try {

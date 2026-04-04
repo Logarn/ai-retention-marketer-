@@ -1,32 +1,558 @@
 import crypto from "crypto";
-import { ApiVersion } from "@shopify/shopify-api";
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-export const DIRECT_SHOPIFY_GRAPHQL_ENDPOINT_TEMPLATE =
-  "https://{SHOPIFY_STORE_NAME}.myshopify.com/admin/api/2024-01/graphql.json";
-export const DIRECT_SHOPIFY_REST_CUSTOMERS_ENDPOINT_TEMPLATE =
-  "https://{SHOPIFY_CLIENT_ID}:{SHOPIFY_CLIENT_SECRET}@{SHOPIFY_STORE_NAME}.myshopify.com/admin/api/2024-01/customers.json";
+const SHOPIFY_API_VERSION = "2024-01";
 export const SHOPIFY_CALLBACK_PATH = "/api/auth/shopify/callback";
 
-function getStoreDomain() {
-  const store = process.env.SHOPIFY_STORE_NAME?.trim();
-  if (!store) throw new Error("SHOPIFY_STORE_NAME is not configured.");
-  return `${store}.myshopify.com`;
+export type ShopifySyncMode = "full" | "incremental";
+
+export type ShopifySyncSummary = {
+  mode: ShopifySyncMode;
+  customersFetched: number;
+  ordersFetched: number;
+  productsFetched: number;
+  customersUpserted: number;
+  ordersUpserted: number;
+  productsUpserted: number;
+  ordersSinceAt: Date | null;
+  productsSinceAt: Date | null;
+  customersSinceAt: Date | null;
+  warnings: string[];
+};
+
+type ShopifyCustomerPayload = {
+  id?: number;
+  email?: string;
+  first_name?: string;
+  last_name?: string;
+  phone?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+type ShopifyOrderPayload = {
+  id?: number;
+  name?: string;
+  order_number?: number;
+  email?: string;
+  customer?: { id?: number; email?: string };
+  total_price?: string;
+  financial_status?: string;
+  created_at?: string;
+  processed_at?: string;
+  updated_at?: string;
+  line_items?: Array<{
+    id?: number;
+    product_id?: number;
+    sku?: string;
+    quantity?: number;
+    price?: string;
+    title?: string;
+  }>;
+};
+
+type ShopifyProductPayload = {
+  id?: number;
+  title?: string;
+  product_type?: string;
+  image?: { src?: string };
+  variants?: Array<{ sku?: string; price?: string }>;
+  updated_at?: string;
+};
+
+class ShopifyApiError extends Error {
+  status: number;
+  bodySnippet: string;
+
+  constructor(message: string, status: number, bodySnippet: string) {
+    super(message);
+    this.status = status;
+    this.bodySnippet = bodySnippet;
+  }
 }
 
-export function getShopifyConfigDebug() {
-  const storeName = process.env.SHOPIFY_STORE_NAME?.trim() || null;
-  const endpoint = storeName
-    ? `https://${storeName}.myshopify.com/admin/api/2024-01/graphql.json`
-    : null;
+function getStoreName() {
+  const storeName = process.env.SHOPIFY_STORE_NAME?.trim();
+  if (!storeName) throw new Error("SHOPIFY_STORE_NAME is not configured.");
+  return storeName.replace(/\.myshopify\.com$/i, "");
+}
+
+function getStoreDomain() {
+  return `${getStoreName()}.myshopify.com`;
+}
+
+function getShopifyApiBase() {
+  return `https://${getStoreDomain()}/admin/api/${SHOPIFY_API_VERSION}`;
+}
+
+function parseIsoDate(value?: string | null) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function toIsoParam(value?: Date | null) {
+  return value ? value.toISOString() : null;
+}
+
+function getNextLink(linkHeader: string | null) {
+  if (!linkHeader) return null;
+  const parts = linkHeader.split(",");
+  for (const part of parts) {
+    if (!/rel="next"/.test(part)) continue;
+    const match = part.match(/<([^>]+)>/);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
+async function fetchShopifyPage<T>(
+  url: string,
+  token: string,
+  collectionKey: string,
+): Promise<{ items: T[]; nextUrl: string | null }> {
+  const response = await fetch(url, {
+    headers: {
+      "X-Shopify-Access-Token": token,
+    },
+  });
+
+  if (!response.ok) {
+    const body = (await response.text()).slice(0, 500);
+    throw new ShopifyApiError(`Shopify ${collectionKey} fetch failed (${response.status})`, response.status, body);
+  }
+
+  const json = (await response.json()) as Record<string, unknown>;
+  const items = Array.isArray(json[collectionKey]) ? (json[collectionKey] as T[]) : [];
   return {
-    storeName,
-    endpoint,
-    hasClientId: Boolean(process.env.SHOPIFY_CLIENT_ID),
-    hasClientSecret: Boolean(process.env.SHOPIFY_CLIENT_SECRET),
-    hasAccessToken: Boolean(process.env.SHOPIFY_ACCESS_TOKEN),
+    items,
+    nextUrl: getNextLink(response.headers.get("link")),
   };
+}
+
+async function fetchShopifyCollection<T>(
+  resource: "orders" | "products" | "customers",
+  token: string,
+  opts?: { updatedAtMin?: Date | null; extraParams?: Record<string, string> },
+): Promise<T[]> {
+  const baseUrl = new URL(`${getShopifyApiBase()}/${resource}.json`);
+  baseUrl.searchParams.set("limit", "250");
+  if (opts?.updatedAtMin) {
+    baseUrl.searchParams.set("updated_at_min", opts.updatedAtMin.toISOString());
+  }
+  for (const [key, value] of Object.entries(opts?.extraParams ?? {})) {
+    baseUrl.searchParams.set(key, value);
+  }
+
+  const all: T[] = [];
+  let pageUrl: string | null = baseUrl.toString();
+  let pageCount = 0;
+
+  while (pageUrl && pageCount < 30) {
+    const page: { items: T[]; nextUrl: string | null } = await fetchShopifyPage<T>(
+      pageUrl,
+      token,
+      resource,
+    );
+    all.push(...page.items);
+    pageUrl = page.nextUrl;
+    pageCount += 1;
+  }
+
+  return all;
+}
+
+function normalizePhone(phone?: string | null) {
+  if (!phone) return null;
+  const trimmed = phone.trim();
+  return trimmed.length ? trimmed : null;
+}
+
+function parseMoney(value?: string | null) {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseIntSafe(value?: number | null) {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function maxByDate(values: Array<string | undefined>, fallback: Date | null) {
+  let maxDate = fallback;
+  for (const value of values) {
+    const parsed = parseIsoDate(value);
+    if (!parsed) continue;
+    if (!maxDate || parsed.getTime() > maxDate.getTime()) {
+      maxDate = parsed;
+    }
+  }
+  return maxDate;
+}
+
+async function recomputeCustomerAggregates(customerIds: string[]) {
+  if (!customerIds.length) return;
+
+  const customers = await prisma.customer.findMany({
+    where: { id: { in: customerIds } },
+    select: {
+      id: true,
+      orders: {
+        select: { totalAmount: true, createdAt: true },
+        orderBy: { createdAt: "asc" },
+      },
+    },
+  });
+
+  for (const customer of customers) {
+    const totalOrders = customer.orders.length;
+    const totalSpent = customer.orders.reduce((sum, order) => sum + order.totalAmount, 0);
+    const avgOrderValue = totalOrders ? totalSpent / totalOrders : 0;
+    const firstOrderDate = customer.orders[0]?.createdAt ?? null;
+    const lastOrderDate = customer.orders[totalOrders - 1]?.createdAt ?? null;
+
+    await prisma.customer.update({
+      where: { id: customer.id },
+      data: {
+        totalOrders,
+        totalSpent: Number(totalSpent.toFixed(2)),
+        avgOrderValue: Number(avgOrderValue.toFixed(2)),
+        firstOrderDate,
+        lastOrderDate,
+      },
+    });
+  }
+}
+
+async function upsertProduct(sp: ShopifyProductPayload) {
+  const externalId = sp.id ? String(sp.id) : null;
+  const sku =
+    sp.variants?.find((variant) => variant.sku && variant.sku.trim())?.sku?.trim() ??
+    (externalId ? `SHOPIFY-${externalId}` : `SHOPIFY-PRODUCT-${crypto.randomUUID()}`);
+
+  const price = parseMoney(sp.variants?.[0]?.price ?? "0");
+  const data = {
+    externalId,
+    sku,
+    name: sp.title?.trim() || "Untitled Shopify Product",
+    category: sp.product_type || null,
+    imageUrl: sp.image?.src || null,
+    price,
+  };
+
+  if (externalId) {
+    return prisma.product.upsert({
+      where: { externalId },
+      update: data,
+      create: data,
+    });
+  }
+
+  return prisma.product.upsert({
+    where: { sku },
+    update: data,
+    create: data,
+  });
+}
+
+async function upsertCustomer(sc: ShopifyCustomerPayload) {
+  const externalId = sc.id ? String(sc.id) : null;
+  const email = (sc.email || "").trim().toLowerCase();
+  const fallbackEmail = externalId ? `shopify-${externalId}@placeholder.local` : "";
+  const resolvedEmail = email || fallbackEmail;
+  if (!resolvedEmail) return null;
+
+  const data = {
+    externalId,
+    email: resolvedEmail,
+    firstName: sc.first_name || null,
+    lastName: sc.last_name || null,
+    phone: normalizePhone(sc.phone),
+    createdAt: parseIsoDate(sc.created_at) ?? undefined,
+  };
+
+  if (externalId) {
+    return prisma.customer.upsert({
+      where: { externalId },
+      update: {
+        email: resolvedEmail,
+        firstName: data.firstName,
+        lastName: data.lastName,
+        phone: data.phone,
+      },
+      create: data,
+    });
+  }
+
+  return prisma.customer.upsert({
+    where: { email: resolvedEmail },
+    update: {
+      firstName: data.firstName,
+      lastName: data.lastName,
+      phone: data.phone,
+    },
+    create: data,
+  });
+}
+
+async function resolveCustomerForOrder(order: ShopifyOrderPayload) {
+  const externalCustomerId = order.customer?.id ? String(order.customer.id) : null;
+  const orderEmail = (order.email || order.customer?.email || "").trim().toLowerCase();
+  const fallbackEmail = externalCustomerId
+    ? `shopify-${externalCustomerId}@placeholder.local`
+    : order.id
+      ? `shopify-order-${order.id}@placeholder.local`
+      : "";
+  const resolvedEmail = orderEmail || fallbackEmail;
+  if (!resolvedEmail) return null;
+
+  if (externalCustomerId) {
+    const byExternal = await prisma.customer.findUnique({
+      where: { externalId: externalCustomerId },
+    });
+    if (byExternal) {
+      return prisma.customer.update({
+        where: { id: byExternal.id },
+        data: { email: resolvedEmail },
+      });
+    }
+  }
+
+  const byEmail = await prisma.customer.findUnique({ where: { email: resolvedEmail } });
+  if (byEmail) {
+    if (externalCustomerId && !byEmail.externalId) {
+      return prisma.customer.update({
+        where: { id: byEmail.id },
+        data: { externalId: externalCustomerId },
+      });
+    }
+    return byEmail;
+  }
+
+  return prisma.customer.create({
+    data: {
+      email: resolvedEmail,
+      externalId: externalCustomerId,
+    },
+  });
+}
+
+async function upsertOrder(
+  order: ShopifyOrderPayload,
+  productByExternalId: Map<string, string>,
+  touchedCustomerIds: Set<string>,
+) {
+  if (!order.id) return null;
+  const customer = await resolveCustomerForOrder(order);
+  if (!customer) return null;
+  touchedCustomerIds.add(customer.id);
+
+  const externalId = String(order.id);
+  const orderNumber =
+    order.name?.trim() || `SHOPIFY-${order.order_number ?? parseIntSafe(order.id)}`;
+  const totalAmount = parseMoney(order.total_price);
+
+  const persisted = await prisma.order.upsert({
+    where: { externalId },
+    update: {
+      customerId: customer.id,
+      orderNumber,
+      totalAmount,
+      status: order.financial_status || "paid",
+      createdAt: parseIsoDate(order.created_at) ?? undefined,
+      deliveredAt: parseIsoDate(order.processed_at),
+    },
+    create: {
+      externalId,
+      customerId: customer.id,
+      orderNumber,
+      totalAmount,
+      status: order.financial_status || "paid",
+      createdAt: parseIsoDate(order.created_at) ?? undefined,
+      deliveredAt: parseIsoDate(order.processed_at),
+    },
+  });
+
+  await prisma.orderItem.deleteMany({ where: { orderId: persisted.id } });
+  for (const line of order.line_items ?? []) {
+    const productExternalId = line.product_id ? String(line.product_id) : null;
+    let productId = productExternalId ? productByExternalId.get(productExternalId) : null;
+    if (!productId) {
+      const fallbackProduct = await prisma.product.upsert({
+        where: {
+          sku: line.sku?.trim() || `SHOPIFY-LINE-${line.id ?? crypto.randomUUID()}`,
+        },
+        update: {
+          externalId: productExternalId,
+          name: line.title || "Shopify Line Item",
+          price: parseMoney(line.price),
+        },
+        create: {
+          externalId: productExternalId,
+          sku: line.sku?.trim() || `SHOPIFY-LINE-${line.id ?? crypto.randomUUID()}`,
+          name: line.title || "Shopify Line Item",
+          price: parseMoney(line.price),
+        },
+      });
+      productId = fallbackProduct.id;
+      if (productExternalId) productByExternalId.set(productExternalId, productId);
+    }
+
+    await prisma.orderItem.create({
+      data: {
+        orderId: persisted.id,
+        productId,
+        quantity: Math.max(1, parseIntSafe(line.quantity)),
+        price: parseMoney(line.price),
+      },
+    });
+  }
+
+  return persisted;
+}
+
+async function persistShopifyData(input: {
+  customers: ShopifyCustomerPayload[];
+  orders: ShopifyOrderPayload[];
+  products: ShopifyProductPayload[];
+}) {
+  let customersUpserted = 0;
+  let ordersUpserted = 0;
+  let productsUpserted = 0;
+
+  const touchedCustomerIds = new Set<string>();
+  const productByExternalId = new Map<string, string>();
+
+  for (const product of input.products) {
+    const persisted = await upsertProduct(product);
+    if (persisted.externalId) {
+      productByExternalId.set(persisted.externalId, persisted.id);
+    }
+    productsUpserted += 1;
+  }
+
+  for (const customer of input.customers) {
+    const persisted = await upsertCustomer(customer);
+    if (persisted) {
+      customersUpserted += 1;
+      touchedCustomerIds.add(persisted.id);
+    }
+  }
+
+  for (const order of input.orders) {
+    const persisted = await upsertOrder(order, productByExternalId, touchedCustomerIds);
+    if (persisted) ordersUpserted += 1;
+  }
+
+  await recomputeCustomerAggregates(Array.from(touchedCustomerIds));
+
+  return {
+    customersUpserted,
+    ordersUpserted,
+    productsUpserted,
+  };
+}
+
+export async function syncShopifyData(input: {
+  token: string;
+  mode: ShopifySyncMode;
+  state: {
+    ordersSinceAt: Date | null;
+    productsSinceAt: Date | null;
+    customersSinceAt: Date | null;
+  };
+}) {
+  const warnings: string[] = [];
+  const [orders, products] = await Promise.all([
+    fetchShopifyCollection<ShopifyOrderPayload>("orders", input.token, {
+      updatedAtMin: input.mode === "incremental" ? input.state.ordersSinceAt : null,
+      extraParams: { status: "any" },
+    }),
+    fetchShopifyCollection<ShopifyProductPayload>("products", input.token, {
+      updatedAtMin: input.mode === "incremental" ? input.state.productsSinceAt : null,
+    }),
+  ]);
+
+  let customers: ShopifyCustomerPayload[] = [];
+  try {
+    customers = await fetchShopifyCollection<ShopifyCustomerPayload>("customers", input.token, {
+      updatedAtMin: input.mode === "incremental" ? input.state.customersSinceAt : null,
+    });
+  } catch (error) {
+    const denied =
+      error instanceof ShopifyApiError &&
+      (error.status === 403 ||
+        /ACCESS_DENIED|protected customer data|Customer object/i.test(error.bodySnippet));
+    if (denied) {
+      warnings.push("Customer API access denied; continuing with orders/products only.");
+    } else {
+      throw error;
+    }
+  }
+
+  const persisted = await persistShopifyData({
+    customers,
+    orders,
+    products,
+  });
+
+  return {
+    mode: input.mode,
+    customersFetched: customers.length,
+    ordersFetched: orders.length,
+    productsFetched: products.length,
+    ...persisted,
+    ordersSinceAt: maxByDate(
+      orders.map((order) => order.updated_at || order.created_at || order.processed_at),
+      input.state.ordersSinceAt,
+    ),
+    productsSinceAt: maxByDate(
+      products.map((product) => product.updated_at),
+      input.state.productsSinceAt,
+    ),
+    customersSinceAt: maxByDate(
+      customers.map((customer) => customer.updated_at || customer.created_at),
+      input.state.customersSinceAt,
+    ),
+    warnings,
+  } satisfies ShopifySyncSummary;
+}
+
+export async function ingestShopifyOrderWebhook(order: ShopifyOrderPayload) {
+  const persisted = await persistShopifyData({
+    customers: [],
+    orders: [order],
+    products: [],
+  });
+  return {
+    ok: true,
+    ...persisted,
+  };
+}
+
+export async function ingestShopifyProductWebhook(product: ShopifyProductPayload) {
+  const persisted = await persistShopifyData({
+    customers: [],
+    orders: [],
+    products: [product],
+  });
+  return {
+    ok: true,
+    ...persisted,
+  };
+}
+
+export function verifyShopifyWebhookSignature(rawBody: string, hmacHeader: string | null) {
+  const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
+  if (!secret) return true;
+  if (!hmacHeader) return false;
+
+  const digest = crypto.createHmac("sha256", secret).update(rawBody, "utf8").digest("base64");
+  const expected = Buffer.from(digest);
+  const actual = Buffer.from(hmacHeader);
+  if (expected.length !== actual.length) return false;
+  return crypto.timingSafeEqual(expected, actual);
 }
 
 export function resolveShopifyBaseUrl(input: {
@@ -46,7 +572,6 @@ export function resolveShopifyBaseUrl(input: {
       configuredOrigin: null as string | null,
       usingConfigured: false,
       hostMatches: true,
-      parseError: null as string | null,
     };
   }
 
@@ -54,29 +579,16 @@ export function resolveShopifyBaseUrl(input: {
     const configuredUrl = new URL(configured);
     const configuredHost = configuredUrl.host.replace(/^0\.0\.0\.0(?=:\d+|$)/, "localhost");
     const hostMatches = configuredHost === normalizedRequestHost;
-    if (hostMatches) {
-      return {
-        baseUrl: configuredUrl.origin,
-        requestOrigin,
-        normalizedRequestHost,
-        configuredNextAuthUrl: configured,
-        configuredOrigin: configuredUrl.origin,
-        usingConfigured: true,
-        hostMatches,
-        parseError: null as string | null,
-      };
-    }
     return {
-      baseUrl: requestOrigin,
+      baseUrl: hostMatches ? configuredUrl.origin : requestOrigin,
       requestOrigin,
       normalizedRequestHost,
       configuredNextAuthUrl: configured,
       configuredOrigin: configuredUrl.origin,
-      usingConfigured: false,
+      usingConfigured: hostMatches,
       hostMatches,
-      parseError: null as string | null,
     };
-  } catch (error) {
+  } catch {
     return {
       baseUrl: requestOrigin,
       requestOrigin,
@@ -85,7 +597,6 @@ export function resolveShopifyBaseUrl(input: {
       configuredOrigin: null as string | null,
       usingConfigured: false,
       hostMatches: false,
-      parseError: error instanceof Error ? error.message : "Failed to parse NEXTAUTH_URL",
     };
   }
 }
@@ -96,10 +607,6 @@ export function resolveShopifyBaseUrlFromRequest(request: NextRequest) {
     requestHost: request.nextUrl.host,
     configuredNextAuthUrl: process.env.NEXTAUTH_URL,
   }).baseUrl;
-}
-
-export function resolveOAuthBaseUrl(request: NextRequest) {
-  return resolveShopifyBaseUrlFromRequest(request);
 }
 
 export function getShopifyBaseResolution(request: NextRequest) {
@@ -116,15 +623,6 @@ export function getShopifyBaseResolution(request: NextRequest) {
   };
 }
 
-function normalizePhone(phone?: string | null) {
-  if (!phone) return null;
-  return phone.trim() || null;
-}
-
-export function getShopifyAuthUrl() {
-  return getShopifyAuthUrlWithBase(process.env.NEXTAUTH_URL ?? "");
-}
-
 export function getShopifyCallbackUrlWithBase(baseUrl: string) {
   const normalizedBase = baseUrl.replace(/\/+$/, "");
   return `${normalizedBase}${SHOPIFY_CALLBACK_PATH}`;
@@ -133,10 +631,12 @@ export function getShopifyCallbackUrlWithBase(baseUrl: string) {
 export function getShopifyAuthUrlWithBase(baseUrl: string, state?: string) {
   const shop = getStoreDomain();
   const clientId = process.env.SHOPIFY_CLIENT_ID;
+  if (!clientId) throw new Error("SHOPIFY_CLIENT_ID is not configured.");
+
   const scopes = ["read_customers", "read_orders", "read_products"].join(",");
   const redirectUri = getShopifyCallbackUrlWithBase(baseUrl);
-  if (!clientId) throw new Error("SHOPIFY_CLIENT_ID is not configured.");
   const nonce = state ?? crypto.randomUUID();
+
   return `https://${shop}/admin/oauth/authorize?client_id=${clientId}&scope=${encodeURIComponent(
     scopes,
   )}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${nonce}&shop=${encodeURIComponent(shop)}`;
@@ -146,7 +646,8 @@ export async function exchangeShopifyCodeForToken(code: string) {
   const shop = getStoreDomain();
   const clientId = process.env.SHOPIFY_CLIENT_ID;
   const clientSecret = process.env.SHOPIFY_CLIENT_SECRET;
-  if (!clientId || !clientSecret) throw new Error("Shopify credentials missing.");
+  if (!clientId || !clientSecret) throw new Error("Shopify OAuth credentials are missing.");
+
   const response = await fetch(`https://${shop}/admin/oauth/access_token`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -156,571 +657,94 @@ export async function exchangeShopifyCodeForToken(code: string) {
       code,
     }),
   });
+
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Failed to exchange Shopify code: ${text}`);
+    throw new Error(`Failed to exchange Shopify code for token: ${text.slice(0, 300)}`);
   }
+
   const payload = (await response.json()) as { access_token: string };
   return payload.access_token;
 }
 
-type ShopifySyncResult = {
-  customersUpserted: number;
-  ordersUpserted: number;
-  productsUpserted: number;
-};
-
-type ShopifyRestPayload = {
-  customers: Array<{
-    id: number;
-    email?: string;
-    first_name?: string;
-    last_name?: string;
-    phone?: string;
-    created_at?: string;
-  }>;
-  orders: Array<{
-    id: number;
-    order_number: number;
-    email?: string;
-    customer?: { id?: number; email?: string };
-    total_price?: string;
-    financial_status?: string;
-    created_at?: string;
-    processed_at?: string;
-    line_items?: Array<{
-      id: number;
-      product_id?: number;
-      sku?: string;
-      quantity?: number;
-      price?: string;
-      title?: string;
-    }>;
-  }>;
-  products: Array<{
-    id: number;
-    title: string;
-    product_type?: string;
-    image?: { src?: string };
-    variants?: Array<{ sku?: string; price?: string }>;
-  }>;
-};
-
-function parseShopifyNumericId(rawId?: string | null): number {
-  if (!rawId) return 0;
-  const parsed = rawId.match(/\/(\d+)$/)?.[1] ?? rawId;
-  const asNumber = Number(parsed);
-  return Number.isFinite(asNumber) ? asNumber : 0;
-}
-
-async function fetchAllFromShopifyRest(token: string): Promise<ShopifyRestPayload> {
-  const shop = getStoreDomain();
-  const base = `https://${shop}/admin/api/${ApiVersion.July25}`;
-  console.log("[shopify] Starting REST sync fetch", { shop, base });
-  const [customersResp, ordersResp, productsResp] = await Promise.all([
-    fetch(`${base}/customers.json?limit=250`, {
-      headers: { "X-Shopify-Access-Token": token },
-    }),
-    fetch(`${base}/orders.json?status=any&limit=250`, {
-      headers: { "X-Shopify-Access-Token": token },
-    }),
-    fetch(`${base}/products.json?limit=250`, {
-      headers: { "X-Shopify-Access-Token": token },
-    }),
-  ]);
-
-  const [customersText, ordersText, productsText] = await Promise.all([
-    customersResp.ok ? Promise.resolve("") : customersResp.text(),
-    ordersResp.ok ? Promise.resolve("") : ordersResp.text(),
-    productsResp.ok ? Promise.resolve("") : productsResp.text(),
-  ]);
-
-  if (ordersResp.status === 401 || productsResp.status === 401 || customersResp.status === 401) {
-    throw new Error("Shopify token rejected (401) while fetching resources.");
-  }
-
-  if (!ordersResp.ok || !productsResp.ok) {
-    throw new Error(
-      `REST fetch failed (customers=${customersResp.status}, orders=${ordersResp.status}, products=${productsResp.status}). ` +
-        `Details: customers=${customersText.slice(0, 220)} orders=${ordersText.slice(0, 220)} products=${productsText.slice(0, 220)}`,
-    );
-  }
-
-  const customers = customersResp.ok
-    ? (((await customersResp.json()) as { customers: unknown[] }).customers as Array<{
-        id: number;
-        email?: string;
-        first_name?: string;
-        last_name?: string;
-        phone?: string;
-        created_at?: string;
-      }>)
-    : (() => {
-        const customerDenied =
-          customersResp.status === 403 ||
-          /ACCESS_DENIED|Customer object|protected customer data/i.test(customersText);
-        if (customerDenied) {
-          console.warn("[shopify] Customer API access denied; continuing with orders/products only.");
-          return [];
-        }
-        throw new Error(
-          `Customers fetch failed (${customersResp.status}): ${customersText.slice(0, 280)}`,
-        );
-      })();
-
-  const orders = ((await ordersResp.json()) as { orders: unknown[] }).orders as Array<{
-    id: number;
-    order_number: number;
-    email?: string;
-    customer?: { id?: number; email?: string };
-    total_price?: string;
-    financial_status?: string;
-    created_at?: string;
-    processed_at?: string;
-    line_items?: Array<{
-      id: number;
-      product_id?: number;
-      sku?: string;
-      quantity?: number;
-      price?: string;
-      title?: string;
-    }>;
-  }>;
-
-  const products = ((await productsResp.json()) as { products: unknown[] }).products as Array<{
-    id: number;
-    title: string;
-    product_type?: string;
-    image?: { src?: string };
-    variants?: Array<{ sku?: string; price?: string }>;
-  }>;
-
-  return { customers, orders, products };
-}
-
-async function fetchAllFromShopifyDirectCredentials(): Promise<ShopifyRestPayload> {
-  const store = process.env.SHOPIFY_STORE_NAME?.trim();
-  const clientId = process.env.SHOPIFY_CLIENT_ID;
-  const clientSecret = process.env.SHOPIFY_CLIENT_SECRET;
-  if (!store || !clientId || !clientSecret) {
-    throw new Error("Direct Shopify credentials missing (SHOPIFY_CLIENT_ID / SHOPIFY_CLIENT_SECRET).");
-  }
-
-  const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
-  const base = `https://${store}.myshopify.com/admin/api/2024-01`;
-  console.log("[shopify] Starting direct credentials REST fetch", {
-    store,
-    endpointTemplate: DIRECT_SHOPIFY_REST_CUSTOMERS_ENDPOINT_TEMPLATE,
+export async function getShopifyTokenFromState() {
+  const state = await prisma.integrationState.findUnique({
+    where: { provider: "shopify" },
   });
-
-  const [customersResp, ordersResp, productsResp] = await Promise.all([
-    fetch(`${base}/customers.json?limit=250`, {
-      headers: { Authorization: `Basic ${basicAuth}` },
-    }),
-    fetch(`${base}/orders.json?status=any&limit=250`, {
-      headers: { Authorization: `Basic ${basicAuth}` },
-    }),
-    fetch(`${base}/products.json?limit=250`, {
-      headers: { Authorization: `Basic ${basicAuth}` },
-    }),
-  ]);
-
-  if (!customersResp.ok || !ordersResp.ok || !productsResp.ok) {
-    const [customersText, ordersText, productsText] = await Promise.all([
-      customersResp.text(),
-      ordersResp.text(),
-      productsResp.text(),
-    ]);
-    const statusSummary = `customers=${customersResp.status}, orders=${ordersResp.status}, products=${productsResp.status}`;
-    if (
-      customersResp.status === 401 ||
-      ordersResp.status === 401 ||
-      productsResp.status === 401
-    ) {
-      throw new Error(
-        `Direct credential authentication rejected by Shopify (${statusSummary}). ` +
-          "Use Connect Shopify (OAuth) or configure SHOPIFY_ACCESS_TOKEN.",
-      );
-    }
-    throw new Error(
-      `Direct credentials REST fetch failed (${statusSummary}). ` +
-        `Details: customers=${customersText.slice(0, 220)} orders=${ordersText.slice(0, 220)} products=${productsText.slice(0, 220)}`,
-    );
-  }
-
-  const customers = ((await customersResp.json()) as { customers: unknown[] }).customers as ShopifyRestPayload["customers"];
-  const orders = ((await ordersResp.json()) as { orders: unknown[] }).orders as ShopifyRestPayload["orders"];
-  const products = ((await productsResp.json()) as { products: unknown[] }).products as ShopifyRestPayload["products"];
-
-  return { customers, orders, products };
-}
-
-async function fetchAllFromShopifyGraphql(token: string): Promise<ShopifyRestPayload> {
-  const shop = getStoreDomain();
-  const endpoint = `https://${shop}/admin/api/2024-01/graphql.json`;
-  const coreQuery = `
-    query DirectSyncCoreData {
-      orders(first: 250, query: "status:any") {
-        edges {
-          node {
-            id
-            name
-            email
-            displayFinancialStatus
-            createdAt
-            processedAt
-            totalPriceSet {
-              shopMoney {
-                amount
-              }
-            }
-            lineItems(first: 100) {
-              edges {
-                node {
-                  id
-                  title
-                  quantity
-                  sku
-                  originalUnitPriceSet {
-                    shopMoney {
-                      amount
-                    }
-                  }
-                  variant {
-                    product {
-                      id
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-      products(first: 250) {
-        edges {
-          node {
-            id
-            title
-            productType
-            featuredImage {
-              url
-            }
-            variants(first: 20) {
-              edges {
-                node {
-                  sku
-                  price
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  `;
-
-  console.log("[shopify] Starting GraphQL fallback fetch", { shop, endpoint });
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": token,
-    },
-    body: JSON.stringify({ query: coreQuery }),
-  });
-
-  const payload = (await response.json()) as {
-    errors?: Array<{ message?: string }>;
-    data?: {
-      orders?: { edges?: Array<{ node?: Record<string, unknown> }> };
-      products?: { edges?: Array<{ node?: Record<string, unknown> }> };
-    };
+  return {
+    state,
+    token:
+      state?.accessToken ||
+      process.env.SHOPIFY_ACCESS_TOKEN ||
+      process.env.SHOPIFY_ADMIN_ACCESS_TOKEN ||
+      null,
   };
-
-  if (!response.ok || payload.errors?.length) {
-    throw new Error(
-      `GraphQL fetch failed (${response.status}): ${JSON.stringify(payload.errors || payload).slice(0, 380)}`,
-    );
-  }
-
-  const products = (payload.data?.products?.edges ?? []).map((edge) => {
-    const node = edge.node as {
-      id?: string;
-      title?: string;
-      productType?: string;
-      featuredImage?: { url?: string };
-      variants?: { edges?: Array<{ node?: { sku?: string; price?: string } }> };
-    };
-    return {
-      id: parseShopifyNumericId(node.id),
-      title: node.title || "Untitled Product",
-      product_type: node.productType,
-      image: { src: node.featuredImage?.url },
-      variants: (node.variants?.edges ?? []).map((variantEdge) => ({
-        sku: variantEdge.node?.sku,
-        price: variantEdge.node?.price,
-      })),
-    };
-  });
-
-  const orders = (payload.data?.orders?.edges ?? []).map((edge, index) => {
-    const node = edge.node as {
-      id?: string;
-      name?: string;
-      email?: string;
-      displayFinancialStatus?: string;
-      createdAt?: string;
-      processedAt?: string;
-      totalPriceSet?: { shopMoney?: { amount?: string } };
-      lineItems?: {
-        edges?: Array<{
-          node?: {
-            id?: string;
-            title?: string;
-            quantity?: number;
-            sku?: string;
-            originalUnitPriceSet?: { shopMoney?: { amount?: string } };
-            variant?: { product?: { id?: string } };
-          };
-        }>;
-      };
-    };
-
-    const orderNumberFromName = Number(node.name?.replace(/[^0-9]/g, "") || 0);
-    return {
-      id: parseShopifyNumericId(node.id),
-      order_number:
-        Number.isFinite(orderNumberFromName) && orderNumberFromName > 0
-          ? orderNumberFromName
-          : index + 1,
-      email: node.email,
-      total_price: node.totalPriceSet?.shopMoney?.amount,
-      financial_status: node.displayFinancialStatus,
-      created_at: node.createdAt,
-      processed_at: node.processedAt,
-      line_items: (node.lineItems?.edges ?? []).map((lineEdge) => ({
-        id: parseShopifyNumericId(lineEdge.node?.id),
-        product_id: parseShopifyNumericId(lineEdge.node?.variant?.product?.id) || undefined,
-        sku: lineEdge.node?.sku,
-        quantity: lineEdge.node?.quantity,
-        price: lineEdge.node?.originalUnitPriceSet?.shopMoney?.amount,
-        title: lineEdge.node?.title,
-      })),
-    };
-  });
-
-  // Protected customer data access is not required for sync; derive customers from order emails.
-  const customers: ShopifyRestPayload["customers"] = [];
-
-  return { customers, orders, products };
 }
 
-async function persistShopifyData(data: ShopifyRestPayload): Promise<ShopifySyncResult> {
-  const { customers, orders, products } = data;
-  console.log("[shopify] Data fetched", {
-    customers: customers.length,
-    orders: orders.length,
-    products: products.length,
-  });
-
-  let customersUpserted = 0;
-  let productsUpserted = 0;
-  let ordersUpserted = 0;
-
-  const productByShopifyId = new Map<string, string>();
-
-  for (const sp of products) {
-    const sku =
-      sp.variants?.find((v) => v.sku && v.sku.trim())?.sku?.trim() ||
-      `SHOPIFY-${sp.id}`;
-    const price = Number(sp.variants?.[0]?.price || 0);
-    const upserted = await prisma.product.upsert({
-      where: { sku },
-      update: {
-        name: sp.title,
-        category: sp.product_type || null,
-        imageUrl: sp.image?.src || null,
-        price: Number.isFinite(price) ? price : 0,
-      },
-      create: {
-        sku,
-        name: sp.title,
-        category: sp.product_type || null,
-        imageUrl: sp.image?.src || null,
-        price: Number.isFinite(price) ? price : 0,
-      },
-    });
-    productsUpserted += 1;
-    productByShopifyId.set(String(sp.id), upserted.id);
-  }
-
-  for (const sc of customers) {
-    const email = (sc.email || "").trim().toLowerCase();
-    if (!email) continue;
-    await prisma.customer.upsert({
-      where: { email },
-      update: {
-        firstName: sc.first_name || null,
-        lastName: sc.last_name || null,
-        phone: normalizePhone(sc.phone),
-      },
-      create: {
-        email,
-        firstName: sc.first_name || null,
-        lastName: sc.last_name || null,
-        phone: normalizePhone(sc.phone),
-        createdAt: sc.created_at ? new Date(sc.created_at) : undefined,
-      },
-    });
-    customersUpserted += 1;
-  }
-
-  for (const so of orders) {
-    const customerEmail = (so.email || so.customer?.email || "").trim().toLowerCase();
-    if (!customerEmail) continue;
-    let customer = await prisma.customer.findUnique({ where: { email: customerEmail } });
-    if (!customer) {
-      customer = await prisma.customer.create({
-        data: {
-          email: customerEmail,
-        },
-      });
-      customersUpserted += 1;
-    }
-
-    const orderNumber = `SHOPIFY-${so.order_number || so.id}`;
-    const amount = Number(so.total_price || 0);
-    const existing = await prisma.order.findFirst({
-      where: { orderNumber, customerId: customer.id },
-      select: { id: true },
-    });
-
-    if (existing) {
-      await prisma.order.update({
-        where: { id: existing.id },
-        data: {
-          totalAmount: Number.isFinite(amount) ? amount : 0,
-          status: so.financial_status || "paid",
-          createdAt: so.created_at ? new Date(so.created_at) : undefined,
-          deliveredAt: so.processed_at ? new Date(so.processed_at) : null,
-        },
-      });
-
-      await prisma.orderItem.deleteMany({ where: { orderId: existing.id } });
-      for (const line of so.line_items || []) {
-        const productId =
-          (line.product_id ? productByShopifyId.get(String(line.product_id)) : undefined) ||
-          (await prisma.product
-            .upsert({
-              where: { sku: line.sku?.trim() || `SHOPIFY-LINE-${line.id}` },
-              update: {
-                name: line.title || `Shopify Product ${line.id}`,
-                price: Number(line.price || 0) || 0,
-              },
-              create: {
-                sku: line.sku?.trim() || `SHOPIFY-LINE-${line.id}`,
-                name: line.title || `Shopify Product ${line.id}`,
-                price: Number(line.price || 0) || 0,
-              },
-            })
-            .then((p) => p.id));
-
-        if (!productId) continue;
-        await prisma.orderItem.create({
-          data: {
-            orderId: existing.id,
-            productId,
-            quantity: Number(line.quantity || 1),
-            price: Number(line.price || 0) || 0,
-          },
-        });
+export function getSyncCursorFromState(
+  state:
+    | {
+        shopifyLastOrdersSyncAt?: Date | null;
+        shopifyLastProductsSyncAt?: Date | null;
+        shopifyLastCustomersSyncAt?: Date | null;
+        lastSyncAt?: Date | null;
       }
-    } else {
-      const created = await prisma.order.create({
-        data: {
-          customerId: customer.id,
-          orderNumber,
-          totalAmount: Number.isFinite(amount) ? amount : 0,
-          status: so.financial_status || "paid",
-          createdAt: so.created_at ? new Date(so.created_at) : undefined,
-          deliveredAt: so.processed_at ? new Date(so.processed_at) : null,
-        },
-      });
-
-      for (const line of so.line_items || []) {
-        const productId =
-          (line.product_id ? productByShopifyId.get(String(line.product_id)) : undefined) ||
-          (await prisma.product
-            .upsert({
-              where: { sku: line.sku?.trim() || `SHOPIFY-LINE-${line.id}` },
-              update: {
-                name: line.title || `Shopify Product ${line.id}`,
-                price: Number(line.price || 0) || 0,
-              },
-              create: {
-                sku: line.sku?.trim() || `SHOPIFY-LINE-${line.id}`,
-                name: line.title || `Shopify Product ${line.id}`,
-                price: Number(line.price || 0) || 0,
-              },
-            })
-            .then((p) => p.id));
-        if (!productId) continue;
-        await prisma.orderItem.create({
-          data: {
-            orderId: created.id,
-            productId,
-            quantity: Number(line.quantity || 1),
-            price: Number(line.price || 0) || 0,
-          },
-        });
-      }
-    }
-
-    ordersUpserted += 1;
+    | null
+    | undefined,
+  mode: ShopifySyncMode,
+) {
+  if (mode === "full") {
+    return {
+      ordersSinceAt: null,
+      productsSinceAt: null,
+      customersSinceAt: null,
+    };
   }
 
-  // Recompute cached customer aggregates after order sync.
-  const allCustomers = await prisma.customer.findMany({
-    select: { id: true, orders: { select: { totalAmount: true, createdAt: true }, orderBy: { createdAt: "asc" } } },
-  });
-  for (const customer of allCustomers) {
-    const totalOrders = customer.orders.length;
-    const totalSpent = customer.orders.reduce((sum, order) => sum + order.totalAmount, 0);
-    const avgOrderValue = totalOrders ? totalSpent / totalOrders : 0;
-    const firstOrderDate = customer.orders[0]?.createdAt ?? null;
-    const lastOrderDate = customer.orders[totalOrders - 1]?.createdAt ?? null;
-    await prisma.customer.update({
-      where: { id: customer.id },
-      data: {
-        totalOrders,
-        totalSpent: Number(totalSpent.toFixed(2)),
-        avgOrderValue: Number(avgOrderValue.toFixed(2)),
-        firstOrderDate,
-        lastOrderDate,
-      },
-    });
-  }
-
-  return { customersUpserted, ordersUpserted, productsUpserted };
+  return {
+    ordersSinceAt: state?.shopifyLastOrdersSyncAt ?? state?.lastSyncAt ?? null,
+    productsSinceAt: state?.shopifyLastProductsSyncAt ?? state?.lastSyncAt ?? null,
+    customersSinceAt: state?.shopifyLastCustomersSyncAt ?? state?.lastSyncAt ?? null,
+  };
 }
 
-export async function syncShopifyData(token: string): Promise<ShopifySyncResult> {
-  if (!token) throw new Error("Shopify access token is missing. Connect Shopify first.");
-
-  const data = await (async () => {
-    try {
-      return await fetchAllFromShopifyRest(token);
-    } catch (restError) {
-      console.warn("[shopify] REST sync fetch failed, trying GraphQL fallback", restError);
-      return await fetchAllFromShopifyGraphql(token);
-    }
-  })();
-
-  return persistShopifyData(data);
+export function formatSyncSummaryMessage(summary: ShopifySyncSummary) {
+  const base = `Synced ${summary.customersUpserted} customers, ${summary.ordersUpserted} orders, ${summary.productsUpserted} products`;
+  if (!summary.warnings.length) return base;
+  return `${base}. Warnings: ${summary.warnings.join(" | ")}`;
 }
 
-export async function syncShopifyDataDirectCredentials(): Promise<ShopifySyncResult> {
-  const data = await fetchAllFromShopifyDirectCredentials();
-  return persistShopifyData(data);
+export function serializeWarnings(warnings: string[]) {
+  return warnings.length ? warnings : [];
+}
+
+export function sanitizeShopifyErrorMessage(message: string) {
+  return message
+    .replace(/https?:\/\/[^/\s:@]+:[^@\s]+@/gi, "https://[REDACTED]@")
+    .replace(/Basic\s+[A-Za-z0-9+/=]+/gi, "Basic [REDACTED]");
+}
+
+export function toSyncDebugPayload() {
+  return {
+    hasStore: Boolean(process.env.SHOPIFY_STORE_NAME),
+    hasClientId: Boolean(process.env.SHOPIFY_CLIENT_ID),
+    hasClientSecret: Boolean(process.env.SHOPIFY_CLIENT_SECRET),
+    hasAccessToken: Boolean(process.env.SHOPIFY_ACCESS_TOKEN),
+    hasAdminAccessToken: Boolean(process.env.SHOPIFY_ADMIN_ACCESS_TOKEN),
+    storeDomain: process.env.SHOPIFY_STORE_NAME
+      ? `${getStoreName()}.myshopify.com`
+      : null,
+  };
+}
+
+export function toCursorMeta(cursor: {
+  ordersSinceAt: Date | null;
+  productsSinceAt: Date | null;
+  customersSinceAt: Date | null;
+}) {
+  return {
+    ordersSinceAt: toIsoParam(cursor.ordersSinceAt),
+    productsSinceAt: toIsoParam(cursor.productsSinceAt),
+    customersSinceAt: toIsoParam(cursor.customersSinceAt),
+  };
 }

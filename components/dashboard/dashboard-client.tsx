@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { AlertTriangle, DollarSign, RefreshCcw, Users, UserCheck, ShoppingBag } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -93,6 +93,47 @@ type ToastItem = {
   message: string;
 };
 
+type ShopifySyncState = {
+  status: string;
+  connected: boolean;
+  syncInProgress: boolean;
+  lastSyncAt: string | null;
+  message: string | null;
+  activeRunId: string | null;
+  activeRun: {
+    id: string;
+    mode: string;
+    status: string;
+    isBackground: boolean;
+    startedAt: string | null;
+    completedAt: string | null;
+    customersFetched: number;
+    ordersFetched: number;
+    productsFetched: number;
+    customersUpserted: number;
+    ordersUpserted: number;
+    productsUpserted: number;
+    warnings: string[];
+    errorMessage: string | null;
+  } | null;
+  latestRun: {
+    id: string;
+    mode: string;
+    status: string;
+    isBackground: boolean;
+    startedAt: string | null;
+    completedAt: string | null;
+    customersFetched: number;
+    ordersFetched: number;
+    productsFetched: number;
+    customersUpserted: number;
+    ordersUpserted: number;
+    productsUpserted: number;
+    warnings: string[];
+    errorMessage: string | null;
+  } | null;
+};
+
 function MetricCard({
   title,
   value,
@@ -134,11 +175,8 @@ function CohortHeatCell({ value }: { value: number }) {
 
 export function DashboardClient() {
   const [isSyncingShopify, setIsSyncingShopify] = useState(false);
-  const [isSyncingKlaviyoProfiles, setIsSyncingKlaviyoProfiles] = useState(false);
-  const [isSyncingKlaviyoSegments, setIsSyncingKlaviyoSegments] = useState(false);
   const [integrationMessage, setIntegrationMessage] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
-
   const {
     data: overview,
     error: overviewError,
@@ -161,9 +199,27 @@ export function DashboardClient() {
     "/api/analytics/product-insights",
     fetcher,
   );
+  const integrationState = useSWR<ShopifySyncState>("/api/shopify/sync", fetcher, {
+    refreshInterval: 12_000,
+  });
 
   const hasError = overviewError || rfmError || cohortsError || attributionError || productError;
-  const integrationState = useSWR("/api/shopify/sync", fetcher);
+  const activeRun = integrationState.data?.activeRun;
+  const latestRun = integrationState.data?.latestRun;
+  const isPollingRun = Boolean(activeRun?.id);
+
+  useEffect(() => {
+    if (!activeRun?.id) return;
+    const interval = window.setInterval(() => {
+      void integrationState.mutate();
+    }, 4_000);
+    return () => window.clearInterval(interval);
+  }, [activeRun?.id, integrationState]);
+
+  const runWarnings = useMemo(
+    () => (activeRun?.warnings?.length ? activeRun.warnings : latestRun?.warnings ?? []),
+    [activeRun?.warnings, latestRun?.warnings],
+  );
 
   function pushToast(kind: ToastKind, message: string) {
     const id = Date.now() + Math.floor(Math.random() * 1000);
@@ -187,42 +243,41 @@ export function DashboardClient() {
     return fallback;
   }
 
-  async function handleSyncShopify() {
-    console.log("[dashboard] Sync Shopify button clicked");
-    setIntegrationMessage(null);
+  async function startShopifySync(mode: "full" | "incremental", background: boolean) {
+    console.log("[dashboard] Shopify sync request", { mode, background });
     setIsSyncingShopify(true);
+    setIntegrationMessage(null);
     try {
-      const response = await fetch("/api/shopify/sync", { method: "POST" });
+      const response = await fetch("/api/shopify/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode, background }),
+      });
       const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-      console.log("[dashboard] Shopify sync response", json);
       if (!response.ok) {
-        if (
-          (typeof json.detail === "string" &&
-            (json.detail.includes("Connect Shopify") ||
-              json.detail.includes("SHOPIFY_ACCESS_TOKEN"))) ||
-          json.code === "SHOPIFY_TOKEN_REQUIRED" ||
-          json.code === "SHOPIFY_TOKEN_INVALID"
-        ) {
-          setIntegrationMessage("Shopify is not connected. Redirecting to Connect Shopify...");
-          pushToast("info", "Shopify is not connected yet. Redirecting to Connect Shopify now.");
+        if (json.code === "SHOPIFY_TOKEN_REQUIRED" || json.code === "SHOPIFY_TOKEN_INVALID") {
+          pushToast("info", "Shopify is not connected. Redirecting to Connect Shopify.");
           window.location.href = "/api/auth/shopify";
           return;
         }
         throw new Error(extractApiError(json, "Shopify sync failed"));
       }
-      setIntegrationMessage(
-        `Shopify sync completed: ${String((json.summary as Record<string, unknown> | undefined)?.customers ?? 0)} customers, ${String((json.summary as Record<string, unknown> | undefined)?.products ?? 0)} products, ${String((json.summary as Record<string, unknown> | undefined)?.orders ?? 0)} orders`,
-      );
-      pushToast("success", "Shopify sync successful!");
-      await Promise.all([
-        refreshOverview(),
-        integrationState.mutate(),
-      ]);
+
+      if (background) {
+        const runId = String(json.runId || "");
+        pushToast("info", "Background sync started. Polling live status now.");
+        setIntegrationMessage(`Background ${mode} sync started${runId ? ` (run ${runId})` : ""}.`);
+      } else {
+        pushToast("success", "Shopify sync completed.");
+        setIntegrationMessage(String(json.message || "Shopify sync completed."));
+      }
+
+      await Promise.all([refreshOverview(), integrationState.mutate()]);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Shopify sync failed";
       console.error("[dashboard] Shopify sync error", error);
       setIntegrationMessage(message);
-      pushToast("error", `Shopify sync failed: ${message}`);
+      pushToast("error", message);
     } finally {
       setIsSyncingShopify(false);
     }
@@ -231,50 +286,6 @@ export function DashboardClient() {
   function handleConnectShopify() {
     console.log("[dashboard] Connect Shopify clicked");
     window.location.href = "/api/auth/shopify";
-  }
-
-  async function handlePushToKlaviyo() {
-    console.log("[dashboard] Push to Klaviyo button clicked");
-    setIntegrationMessage(null);
-    setIsSyncingKlaviyoProfiles(true);
-    try {
-      const response = await fetch("/api/klaviyo/sync-profiles", { method: "POST" });
-      const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-      console.log("[dashboard] Push to Klaviyo response", json);
-      if (!response.ok) throw new Error(extractApiError(json, "Klaviyo profile sync failed"));
-      const message = `Klaviyo profile sync completed: ${String((json.summary as Record<string, unknown> | undefined)?.profilesSynced ?? 0)} profiles synced`;
-      setIntegrationMessage(message);
-      pushToast("success", "Klaviyo profiles pushed successfully!");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Klaviyo profile sync failed";
-      console.error("[dashboard] Push to Klaviyo error", error);
-      setIntegrationMessage(message);
-      pushToast("error", `Push to Klaviyo failed: ${message}`);
-    } finally {
-      setIsSyncingKlaviyoProfiles(false);
-    }
-  }
-
-  async function handleSyncSegments() {
-    console.log("[dashboard] Sync Segments button clicked");
-    setIntegrationMessage(null);
-    setIsSyncingKlaviyoSegments(true);
-    try {
-      const response = await fetch("/api/klaviyo/sync-segments", { method: "POST" });
-      const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-      console.log("[dashboard] Sync Segments response", json);
-      if (!response.ok) throw new Error(extractApiError(json, "Klaviyo segment sync failed"));
-      const message = `Klaviyo segment sync completed: ${String((json.summary as Record<string, unknown> | undefined)?.segmentsSynced ?? 0)} segments synced`;
-      setIntegrationMessage(message);
-      pushToast("success", "Klaviyo segments synced successfully!");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Klaviyo segment sync failed";
-      console.error("[dashboard] Sync Segments error", error);
-      setIntegrationMessage(message);
-      pushToast("error", `Sync Segments failed: ${message}`);
-    } finally {
-      setIsSyncingKlaviyoSegments(false);
-    }
   }
 
   return (
@@ -314,25 +325,21 @@ export function DashboardClient() {
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           <Button variant="outline" onClick={handleConnectShopify} disabled={isSyncingShopify}>
-            {isSyncingShopify ? "Working..." : "Connect Shopify"}
-          </Button>
-          <Button variant="outline" onClick={() => void handleSyncShopify()} disabled={isSyncingShopify}>
-            <RefreshCcw className="h-4 w-4" />
-            {isSyncingShopify ? "Syncing Shopify..." : "Sync Now"}
+            Connect Shopify
           </Button>
           <Button
             variant="outline"
-            onClick={() => void handlePushToKlaviyo()}
-            disabled={isSyncingKlaviyoProfiles}
+            onClick={() => void startShopifySync("incremental", false)}
+            disabled={isSyncingShopify}
           >
-            {isSyncingKlaviyoProfiles ? "Pushing Profiles..." : "Push to Klaviyo"}
+            {isSyncingShopify ? "Working..." : "Sync Incremental"}
           </Button>
           <Button
             variant="outline"
-            onClick={() => void handleSyncSegments()}
-            disabled={isSyncingKlaviyoSegments}
+            onClick={() => void startShopifySync("full", true)}
+            disabled={isSyncingShopify}
           >
-            {isSyncingKlaviyoSegments ? "Syncing Segments..." : "Sync Segments"}
+            Start Background Full Sync
           </Button>
           <Button variant="outline" onClick={() => void refreshOverview()}>
             <RefreshCcw className="h-4 w-4" />
@@ -343,22 +350,71 @@ export function DashboardClient() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Integration Status</CardTitle>
+          <CardTitle>Shopify Integration Status</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-2 text-sm">
+        <CardContent className="space-y-3 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <span>Connection:</span>
+            <Badge variant={integrationState.data?.connected ? "success" : "warning"}>
+              {integrationState.data?.connected ? "Connected" : "Not connected"}
+            </Badge>
+            <span>Sync status:</span>
+            <Badge
+              variant={
+                integrationState.data?.status === "success"
+                  ? "success"
+                  : integrationState.data?.status === "error"
+                    ? "destructive"
+                    : "outline"
+              }
+            >
+              {integrationState.data?.status ?? "idle"}
+            </Badge>
+            {isPollingRun ? <Badge variant="secondary">Polling live run</Badge> : null}
+          </div>
           <p>
-            Last Shopify sync:{" "}
+            Last sync:{" "}
             {integrationState.data?.lastSyncAt
               ? new Date(integrationState.data.lastSyncAt).toLocaleString()
               : "Not synced yet"}
           </p>
-          <p>
-            Current status:{" "}
-            <Badge variant={integrationState.data?.status === "ok" ? "success" : "outline"}>
-              {integrationState.data?.status ?? "idle"}
-            </Badge>
-          </p>
-          {integrationMessage ? <p className="text-slate-600">{integrationMessage}</p> : null}
+          {integrationState.data?.message ? (
+            <p className="text-zinc-300">{integrationState.data.message}</p>
+          ) : null}
+          {integrationMessage ? <p className="text-zinc-300">{integrationMessage}</p> : null}
+
+          {(activeRun || latestRun) && (
+            <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+              <p className="text-xs uppercase tracking-wide text-zinc-400">
+                {activeRun ? "Active run" : "Last run"}
+              </p>
+              <p className="mt-1 text-sm text-zinc-200">
+                {(activeRun || latestRun)?.mode} | {(activeRun || latestRun)?.status} | run{" "}
+                {(activeRun || latestRun)?.id}
+              </p>
+              <p className="mt-1 text-xs text-zinc-400">
+                fetched c/o/p: {(activeRun || latestRun)?.customersFetched ?? 0}/
+                {(activeRun || latestRun)?.ordersFetched ?? 0}/
+                {(activeRun || latestRun)?.productsFetched ?? 0}
+                {" · "}
+                upserted c/o/p: {(activeRun || latestRun)?.customersUpserted ?? 0}/
+                {(activeRun || latestRun)?.ordersUpserted ?? 0}/
+                {(activeRun || latestRun)?.productsUpserted ?? 0}
+              </p>
+              {(activeRun || latestRun)?.errorMessage ? (
+                <p className="mt-2 text-xs text-red-200">{(activeRun || latestRun)?.errorMessage}</p>
+              ) : null}
+              {runWarnings.length ? (
+                <div className="mt-2 space-y-1">
+                  {runWarnings.map((warning, index) => (
+                    <p key={`${warning}-${index}`} className="text-xs text-amber-200">
+                      Warning: {warning}
+                    </p>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          )}
         </CardContent>
       </Card>
 

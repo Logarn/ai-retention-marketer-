@@ -93,8 +93,8 @@ For SMS variant objects should be: { "message": "..." }`;
 
     const completion = await groqClient.chat.completions.create({
       model: GROQ_MODEL,
-      max_tokens: 1200,
       temperature: 0.8,
+      max_tokens: 1200,
       messages: [{ role: "user", content: prompt }],
     });
 

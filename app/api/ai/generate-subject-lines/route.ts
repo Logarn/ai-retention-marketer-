@@ -48,7 +48,8 @@ Constraints:
 
     const completion = await groqClient.chat.completions.create({
       model: GROQ_MODEL,
-      max_tokens: 250,
+      temperature: 0.4,
+      max_tokens: 300,
       messages: [{ role: "user", content: prompt }],
     });
 

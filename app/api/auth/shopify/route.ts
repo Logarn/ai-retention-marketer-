@@ -1,23 +1,32 @@
+import crypto from "crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { getShopifyAuthUrlWithBase, resolveOAuthBaseUrl } from "@/lib/shopify";
 import { prisma } from "@/lib/prisma";
+import { getShopifyAuthUrlWithBase, resolveShopifyBaseUrlFromRequest } from "@/lib/shopify";
 
 export async function GET(request: NextRequest) {
   try {
-    console.log("[shopify-oauth] Initiate request", { url: request.url });
-    const baseUrl = resolveOAuthBaseUrl(request);
+    const baseUrl = resolveShopifyBaseUrlFromRequest(request);
     const state = crypto.randomUUID();
+
     await prisma.integrationState.upsert({
       where: { provider: "shopify_oauth_state" },
-      update: { accessToken: state, updatedAt: new Date() },
-      create: { provider: "shopify_oauth_state", accessToken: state },
+      update: {
+        accessToken: state,
+      },
+      create: {
+        provider: "shopify_oauth_state",
+        accessToken: state,
+      },
     });
+
     const authUrl = getShopifyAuthUrlWithBase(baseUrl, state);
-    console.log("[shopify-oauth] Redirecting to Shopify", { authUrl });
     return NextResponse.redirect(authUrl);
   } catch (error) {
     return NextResponse.json(
-      { error: "Failed to initiate Shopify OAuth flow", detail: String(error) },
+      {
+        error: "Failed to initiate Shopify OAuth flow",
+        detail: error instanceof Error ? error.message : String(error),
+      },
       { status: 500 },
     );
   }

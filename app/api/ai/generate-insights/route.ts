@@ -22,12 +22,11 @@ export async function POST(request: NextRequest) {
 
     const response = await groqClient.chat.completions.create({
       model: GROQ_MODEL,
-      max_tokens: 900,
       temperature: 0.3,
       messages: [{ role: "user", content: prompt }],
     });
 
-    const text = response.choices[0]?.message?.content ?? "";
+    const text = response.choices?.[0]?.message?.content || "";
 
     return NextResponse.json({ raw: text, mocked: false });
   } catch (error) {

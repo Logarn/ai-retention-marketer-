@@ -140,16 +140,241 @@ model MessageTemplate {
 }
 
 model IntegrationState {
+  id                       String   @id @default(cuid())
+  provider                 String   @unique
+  connected                Boolean  @default(false)
+  accessToken              String?
+  refreshToken             String?
+  tokenExpiresAt           DateTime?
+  lastSyncAt               DateTime?
+  lastSyncStatus           String?
+  lastSyncMessage          String?
+  syncInProgress           Boolean  @default(false)
+  shopifyLastOrdersSyncAt  DateTime?
+  shopifyLastProductsSyncAt DateTime?
+  shopifyLastCustomersSyncAt DateTime?
+  shopifyLastRunId         String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+}
+
+model ShopifySyncRun {
   id                 String   @id @default(cuid())
-  provider           String   @unique
-  connected          Boolean  @default(false)
-  accessToken        String?
-  refreshToken       String?
-  tokenExpiresAt     DateTime?
-  lastSyncAt         DateTime?
-  lastSyncStatus     String?
-  lastSyncMessage    String?
-  syncInProgress     Boolean  @default(false)
+  mode               String
+  status             String
+  triggeredBy        String?
+  isBackground       Boolean  @default(false)
+  startedAt          DateTime?
+  completedAt        DateTime?
+  sinceOrdersAt      DateTime?
+  sinceProductsAt    DateTime?
+  customersFetched   Int      @default(0)
+  productsFetched    Int      @default(0)
+  ordersFetched      Int      @default(0)
+  customersUpserted  Int      @default(0)
+  productsUpserted   Int      @default(0)
+  ordersUpserted     Int      @default(0)
+  warnings           Json?
+  errorMessage       String?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
+
+  @@index([status, createdAt])
+}
+
+model BrandProfile {
+  id                   String               @id @default(cuid())
+  brandName            String
+  tagline              String?
+  industryVertical     String
+  pricePositioning     String
+  foundedYear          Int?
+  brandStory           String?
+  missionStatement     String?
+  coreValues           String[]
+  shopifyStoreUrl      String?
+  websiteUrl           String?
+  lastStoreAnalysis    DateTime?
+  storeAnalysisData    Json?
+  voiceTone            VoiceTone?
+  dosAndDonts          DosAndDonts?
+  productIntelligence  ProductIntelligence?
+  compliance           Compliance?
+  seasonalContext      SeasonalContext?
+  personas             Persona[]
+  sellingPoints        SellingPoint[]
+  documents            BrandDocument[]
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+}
+
+model Persona {
+  id                String       @id @default(cuid())
+  brandProfileId    String
+  brandProfile      BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  name              String
+  isPrimary         Boolean      @default(false)
+  ageRange          String?
+  genderSkew        String?
+  locationPatterns  String[]
+  incomeLevel       String?
+  lifestyle         String[]
+  values            String[]
+  interests         String[]
+  painPoints        String[]
+  motivations       String[]
+  objections        String[]
+  languageTheyUse   String[]
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@index([brandProfileId, createdAt])
+}
+
+model SellingPoint {
+  id              String       @id @default(cuid())
+  brandProfileId  String
+  brandProfile    BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  type            String
+  title           String
+  description     String?
+  sortOrder       Int          @default(0)
+  createdAt       DateTime     @default(now())
+
+  @@index([brandProfileId, type, sortOrder])
+}
+
+model VoiceTone {
+  id                    String       @id @default(cuid())
+  brandProfileId        String       @unique
+  brandProfile          BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  formalCasual          Int          @default(5)
+  seriousPlayful        Int          @default(5)
+  reservedEnthusiastic  Int          @default(5)
+  technicalSimple       Int          @default(5)
+  traditionalEdgy       Int          @default(5)
+  corporatePersonal     Int          @default(5)
+  welcomeTone           Json?
+  promotionalTone       Json?
+  educationalTone       Json?
+  vipTone               Json?
+  winbackTone           Json?
+  transactionalTone     Json?
+  apologyTone           Json?
+  launchTone            Json?
+  sentenceLength        String?
+  paragraphLength       String?
+  useContractions       String?
+  useExclamations       String?
+  emojiUsage            Json?
+  useCaps               String?
+  preferredAdjectives   String[]
+  preferredVerbs        String[]
+  preferredCTAs         String[]
+  signaturePhrases      String[]
+  greetingStyle         String?
+  signoffStyle          String?
+  customerReference     String?
+  brandReference        String?
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+}
+
+model DosAndDonts {
+  id                String       @id @default(cuid())
+  brandProfileId    String       @unique
+  brandProfile      BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  messagingDos      Json?
+  languageDos       Json?
+  complianceDos     Json?
+  designDos         Json?
+  timingDos         Json?
+  messagingDonts    Json?
+  languageDonts     Json?
+  complianceDonts   Json?
+  designDonts       Json?
+  toneDonts         Json?
+  cautionRules      Json?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+}
+
+model ProductIntelligence {
+  id                 String       @id @default(cuid())
+  brandProfileId     String       @unique
+  brandProfile       BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  descriptionStyle   String?
+  priceMentionRule   String?
+  products           Json?
+  collections        Json?
+  heroProducts       String[]
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+}
+
+model Compliance {
+  id                     String       @id @default(cuid())
+  brandProfileId         String       @unique
+  brandProfile           BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  physicalAddress        String?
+  unsubscribeText        String?
+  smsOptOutText          String?
+  privacyPolicyUrl       String?
+  termsUrl               String?
+  fdaDisclaimer          String?
+  prop65Warning          String?
+  subscriptionDisclosure String?
+  autoRenewalLanguage    String?
+  customDisclaimers      String[]
+  trademarkRules         String?
+  ugcRightsText          String?
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
+}
+
+model SeasonalContext {
+  id                  String       @id @default(cuid())
+  brandProfileId      String       @unique
+  brandProfile        BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  celebratedHolidays  String[]
+  skippedHolidays     String[]
+  brandAnniversary    DateTime?
+  plannedSales        Json?
+  blackoutDates       DateTime[]
+  blackoutTopics      Json?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+}
+
+model BrandDocument {
+  id                String       @id @default(cuid())
+  brandProfileId    String
+  brandProfile      BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  fileName          String
+  fileType          String
+  fileUrl           String
+  fileSize          Int
+  documentType      String?
+  extractedText     String?
+  extractedRules    Json?
+  extractionStatus  String       @default("pending")
+  extractedAt       DateTime?
+  appliedToBrand    Boolean      @default(false)
+  conflictsFound    Json?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@index([brandProfileId, createdAt])
+}
+
+model StoreScreenshot {
+  id                String   @id @default(cuid())
+  brandProfileId    String
+  pageType          String
+  pageUrl           String
+  screenshotUrl     String
+  extractedElements Json?
+  capturedAt        DateTime @default(now())
+
+  @@index([brandProfileId, capturedAt])
 }
