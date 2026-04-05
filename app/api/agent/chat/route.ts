@@ -16,6 +16,8 @@ const bodySchema = z.object({
     .object({
       kind: z.enum(["store_analysis", "documents_done", "skip_docs"]),
       analysisData: z.record(z.string(), z.any()).optional(),
+      /** When true, client already called /auto-apply — skip duplicate apply */
+      alreadyApplied: z.boolean().optional(),
     })
     .optional(),
 });
@@ -98,19 +100,16 @@ function voicePresetFromChip(chip: string): Record<string, number> {
   return { voiceFormalCasual: 50, voiceSeriousPlayful: 50 };
 }
 
-async function applyAnalyzeStore(requestUrl: string, analysisData: Record<string, unknown>) {
-  const applyUrl = new URL("/api/brain/analyze-store/apply", requestUrl);
+async function applyAnalyzeStoreAuto(requestUrl: string, analysisData: Record<string, unknown>) {
+  const applyUrl = new URL("/api/brain/analyze-store/auto-apply", requestUrl);
   const res = await fetch(applyUrl.toString(), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      analysisData,
-      sections: ["identity", "audience", "voice", "rules", "ctas", "phrases", "emailPrefs"],
-    }),
+    body: JSON.stringify({ analysisData }),
   });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
-    console.warn("[agent/chat] analyze-store apply failed", err);
+    console.warn("[agent/chat] analyze-store auto-apply failed", err);
   }
 }
 
@@ -122,6 +121,7 @@ export async function POST(request: Request) {
     }
 
     const { sessionId, message, payload } = parsed.data;
+    const alreadyApplied = payload?.alreadyApplied === true;
     const requestUrl = request.url;
 
     const session = await prisma.chatSession.findFirst({
@@ -142,7 +142,9 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "analysisData required" }, { status: 400 });
       }
 
-      await applyAnalyzeStore(requestUrl, analysis as Record<string, unknown>);
+      if (!alreadyApplied) {
+        await applyAnalyzeStoreAuto(requestUrl, analysis as Record<string, unknown>);
+      }
 
       const brandName = String((analysis as { brandName?: string }).brandName ?? "your brand");
       const industry = String((analysis as { industry?: string }).industry ?? "—");

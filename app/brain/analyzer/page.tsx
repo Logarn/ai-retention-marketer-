@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { CheckCircle2, ChevronRight, Loader2, RefreshCcw, Search, Sparkles, Trash2 } from "lucide-react";
+import { ChevronRight, Loader2, RefreshCcw, RotateCcw, Search, Sparkles, Trash2 } from "lucide-react";
 import { normalizeFullAnalysis, type AnalysisData } from "@/lib/brain/analyze-store-normalize";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -71,25 +71,6 @@ type AnalyzerResult = {
   rawSnippet?: string;
 };
 
-type ApplySection =
-  | "identity"
-  | "audience"
-  | "voice"
-  | "rules"
-  | "ctas"
-  | "phrases"
-  | "emailPrefs";
-
-const APPLYABLE_SECTIONS: Array<{ key: ApplySection; label: string; description: string }> = [
-  { key: "identity", label: "Core Identity", description: "Brand name, niche, story, mission, USP" },
-  { key: "audience", label: "Target Audience", description: "Demographics, psychographics, pain points, desires" },
-  { key: "voice", label: "Brand Voice", description: "10 voice dimensions and voice description" },
-  { key: "rules", label: "Messaging Rules", description: "Do's and don'ts from extracted guidance" },
-  { key: "ctas", label: "CTAs", description: "Suggested call-to-action phrases" },
-  { key: "phrases", label: "Phrases", description: "Preferred and banned phrase suggestions" },
-  { key: "emailPrefs", label: "Email Preferences", description: "Greeting, sign-off, emoji and cadence defaults" },
-];
-
 const fetcher = async (url: string) => {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Request failed: ${response.status}`);
@@ -112,9 +93,9 @@ type PersistedSession = {
   storeUrl: string;
   analysisResult: AnalyzerResult;
   stepPhase: Record<StepId, "pending" | "running" | "complete" | "error">;
-  selectedSections: Record<ApplySection, boolean>;
   expandedPages: boolean;
-  applyMessage: string | null;
+  autoApplySuccess: boolean;
+  createdIds?: { rules: string[]; ctas: string[]; phrases: string[] };
 };
 
 const COMPLETE_PHASE: Record<StepId, "complete"> = {
@@ -204,14 +185,15 @@ function MiniVoiceMeter({ label, value }: { label: string; value: number }) {
 }
 
 export default function BrainAnalyzerPage() {
-  const { data: profileData } = useSWR<BrandProfileResponse>("/api/brain/profile", fetcher);
+  const { data: profileData, mutate: mutateProfile } = useSWR<BrandProfileResponse>("/api/brain/profile", fetcher);
   const [hydrated, setHydrated] = useState(false);
   const [storeUrl, setStoreUrl] = useState("");
   const [analysisResult, setAnalysisResult] = useState<AnalyzerResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [isApplying, setIsApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [applyMessage, setApplyMessage] = useState<string | null>(null);
+  const [autoApplySuccess, setAutoApplySuccess] = useState(false);
+  const [createdIds, setCreatedIds] = useState<{ rules: string[]; ctas: string[]; phrases: string[] } | null>(null);
+  const [reverting, setReverting] = useState(false);
   const [stepPhase, setStepPhase] = useState<Record<StepId, "pending" | "running" | "complete" | "error">>({
     scrape: "pending",
     identity: "pending",
@@ -220,25 +202,15 @@ export default function BrainAnalyzerPage() {
   });
   const [expandedPages, setExpandedPages] = useState(false);
   const [debugSnippet, setDebugSnippet] = useState<string | null>(null);
-  const [selectedSections, setSelectedSections] = useState<Record<ApplySection, boolean>>({
-    identity: true,
-    audience: true,
-    voice: true,
-    rules: true,
-    ctas: true,
-    phrases: true,
-    emailPrefs: true,
-  });
-
   useLayoutEffect(() => {
     const saved = readPersistedSession();
     if (saved) {
       setStoreUrl(saved.storeUrl);
       setAnalysisResult(saved.analysisResult);
       setStepPhase(saved.stepPhase ?? COMPLETE_PHASE);
-      setSelectedSections(saved.selectedSections);
       setExpandedPages(saved.expandedPages);
-      setApplyMessage(saved.applyMessage);
+      setAutoApplySuccess(saved.autoApplySuccess ?? false);
+      setCreatedIds(saved.createdIds ?? null);
     }
     setHydrated(true);
   }, []);
@@ -259,19 +231,11 @@ export default function BrainAnalyzerPage() {
       storeUrl,
       analysisResult,
       stepPhase,
-      selectedSections,
       expandedPages,
-      applyMessage,
+      autoApplySuccess,
+      createdIds: createdIds ?? undefined,
     });
-  }, [hydrated, analysisResult, storeUrl, stepPhase, selectedSections, expandedPages, applyMessage]);
-
-  const selectedSectionList = useMemo(
-    () =>
-      APPLYABLE_SECTIONS.filter((section) => selectedSections[section.key]).map(
-        (section) => section.key,
-      ),
-    [selectedSections],
-  );
+  }, [hydrated, analysisResult, storeUrl, stepPhase, expandedPages, autoApplySuccess, createdIds]);
 
   async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit, timeoutMs: number) {
     const controller = new AbortController();
@@ -287,7 +251,8 @@ export default function BrainAnalyzerPage() {
   function clearSavedSession() {
     writePersistedSession(null);
     setAnalysisResult(null);
-    setApplyMessage(null);
+    setAutoApplySuccess(false);
+    setCreatedIds(null);
     setError(null);
     setDebugSnippet(null);
     setExpandedPages(false);
@@ -302,7 +267,8 @@ export default function BrainAnalyzerPage() {
   async function analyzeStore() {
     if (!storeUrl.trim() || isAnalyzing) return;
     setError(null);
-    setApplyMessage(null);
+    setAutoApplySuccess(false);
+    setCreatedIds(null);
     setAnalysisResult(null);
     writePersistedSession(null);
     setDebugSnippet(null);
@@ -397,6 +363,30 @@ export default function BrainAnalyzerPage() {
         ...(voiceJson.analysisData ?? {}),
       });
 
+      const applyRes = await fetch("/api/brain/analyze-store/auto-apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ analysisData: merged }),
+      });
+      const applyJson = (await applyRes.json().catch(() => ({}))) as {
+        success?: boolean;
+        createdIds?: { rules?: string[]; ctas?: string[]; phrases?: string[] };
+        error?: string;
+      };
+      if (!applyRes.ok) {
+        setError(applyJson.error || "Saved analysis to view, but auto-apply to Brand Profile failed.");
+        setAutoApplySuccess(false);
+        setCreatedIds(null);
+      } else {
+        setAutoApplySuccess(true);
+        setCreatedIds({
+          rules: applyJson.createdIds?.rules ?? [],
+          ctas: applyJson.createdIds?.ctas ?? [],
+          phrases: applyJson.createdIds?.phrases ?? [],
+        });
+        void mutateProfile();
+      }
+
       const crawledPages: CrawledPageRow[] = [
         {
           url: scrapeJson.pageUrl ?? normalizeUrl(storeUrl),
@@ -426,28 +416,35 @@ export default function BrainAnalyzerPage() {
     }
   }
 
-  async function applySelectedSections() {
-    if (!analysisResult || !selectedSectionList.length || isApplying) return;
+  async function revertAutoApply() {
+    if (!createdIds || reverting) return;
+    const hasIds =
+      createdIds.rules.length + createdIds.ctas.length + createdIds.phrases.length > 0;
+    if (!hasIds) {
+      setAutoApplySuccess(false);
+      return;
+    }
+    setReverting(true);
     setError(null);
-    setApplyMessage(null);
-    setIsApplying(true);
-
     try {
-      const response = await fetch("/api/brain/analyze-store/apply", {
+      const res = await fetch("/api/brain/analyze-store/revert", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          analysisData: analysisResult.analysisData,
-          sections: selectedSectionList,
+          ruleIds: createdIds.rules,
+          ctaIds: createdIds.ctas,
+          phraseIds: createdIds.phrases,
         }),
       });
-      const json = (await response.json().catch(() => ({}))) as { error?: string; summary?: string };
-      if (!response.ok) throw new Error(json.error || "Apply failed.");
-      setApplyMessage(json.summary || "Selected sections applied to Brand Profile.");
-    } catch (applyError) {
-      setError(applyError instanceof Error ? applyError.message : "Apply failed.");
+      const json = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) throw new Error(json.error || "Revert failed");
+      setCreatedIds(null);
+      setAutoApplySuccess(false);
+      void mutateProfile();
+    } catch (revertError) {
+      setError(revertError instanceof Error ? revertError.message : "Revert failed.");
     } finally {
-      setIsApplying(false);
+      setReverting(false);
     }
   }
 
@@ -496,7 +493,7 @@ export default function BrainAnalyzerPage() {
 
       {profileData?.profile.brandName || profileData?.profile.brandStory ? (
         <div className="rounded-xl border border-amber-300/30 bg-amber-300/10 px-4 py-3 text-sm text-amber-100">
-          This will update your existing Brand Profile. You can select which sections to overwrite.
+          Analysis runs automatically save to your Brand Profile (including suggested rules, CTAs, and phrases).
         </div>
       ) : null}
 
@@ -574,27 +571,14 @@ export default function BrainAnalyzerPage() {
 
       {analysisResult ? (
         <div className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            {APPLYABLE_SECTIONS.map((section) => (
-              <label
-                key={section.key}
-                className="flex items-start gap-3 rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3"
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedSections[section.key]}
-                  onChange={(event) =>
-                    setSelectedSections((prev) => ({ ...prev, [section.key]: event.target.checked }))
-                  }
-                  className="mt-1 accent-indigo-400"
-                />
-                <div>
-                  <p className="text-sm font-medium text-zinc-100">{section.label}</p>
-                  <p className="text-xs text-zinc-400">{section.description}</p>
-                </div>
-              </label>
-            ))}
-          </div>
+          {autoApplySuccess ? (
+            <div className="rounded-xl border border-emerald-300/30 bg-emerald-300/10 px-4 py-3 text-sm text-emerald-100">
+              Brand Profile updated with extracted data.{" "}
+              <Link href="/brain/profile" className="inline-flex items-center gap-1 font-medium underline underline-offset-2">
+                Open Brand Profile <ChevronRight className="h-3 w-3" />
+              </Link>
+            </div>
+          ) : null}
 
           <Card>
             <CardHeader>
@@ -773,10 +757,6 @@ export default function BrainAnalyzerPage() {
           </Card>
 
           <div className="flex flex-wrap items-center gap-2">
-            <Button onClick={() => void applySelectedSections()} disabled={isApplying || !selectedSectionList.length}>
-              {isApplying ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-              Apply Selected to Brand Profile
-            </Button>
             <Button
               variant="outline"
               onClick={() => void analyzeStore()}
@@ -785,20 +765,25 @@ export default function BrainAnalyzerPage() {
               <RefreshCcw className="h-4 w-4" />
               Re-analyze
             </Button>
+            {autoApplySuccess &&
+            createdIds &&
+            createdIds.rules.length + createdIds.ctas.length + createdIds.phrases.length > 0 ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void revertAutoApply()}
+                disabled={reverting}
+                className="text-zinc-300"
+              >
+                {reverting ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+                Undo added rules / CTAs / phrases
+              </Button>
+            ) : null}
             <Button type="button" variant="outline" onClick={() => clearSavedSession()} className="text-zinc-400">
               <Trash2 className="h-4 w-4" />
               Clear results
             </Button>
           </div>
-
-          {applyMessage ? (
-            <div className="rounded-xl border border-emerald-300/30 bg-emerald-300/10 px-4 py-3 text-sm text-emerald-100">
-              {applyMessage}{" "}
-              <Link href="/brain/profile" className="inline-flex items-center gap-1 underline underline-offset-2">
-                Review Brand Profile <ChevronRight className="h-3 w-3" />
-              </Link>
-            </div>
-          ) : null}
           {debugSnippet ? (
             <details className="rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3">
               <summary className="cursor-pointer text-xs text-zinc-300">Model response snippet</summary>

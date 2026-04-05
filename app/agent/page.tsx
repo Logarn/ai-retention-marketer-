@@ -6,7 +6,7 @@ import { Loader2, Paperclip, Plus, SendHorizontal, Sparkles } from "lucide-react
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { THINKING_MESSAGES } from "@/lib/agent/worklin";
-import { normalizeFullAnalysis, type AnalysisData } from "@/lib/brain/analyze-store-normalize";
+import { analyzeAndApplyStore } from "@/lib/store-analyzer";
 
 type ChatMsg = {
   id: string;
@@ -24,10 +24,6 @@ type Session = {
   currentStep: number;
   messages: ChatMsg[];
 };
-
-function delay(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
 
 function parseChips(metadata: string | null): string[] {
   if (!metadata) return [];
@@ -106,38 +102,8 @@ export default function AgentPage() {
   async function runStoreAnalyzerFlow(url: string, sid: string) {
     setThinking(true);
     try {
-      const scrapeRes = await fetch("/api/brain/analyze-store/scrape", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: url.trim() }),
-      });
-      const scrapeJson = (await scrapeRes.json()) as { content?: string; error?: string };
-      if (!scrapeRes.ok || !scrapeJson.content) {
-        throw new Error(scrapeJson.error || "Couldn't scrape your site.");
-      }
-      await delay(2000);
-
-      const idRes = await fetch("/api/brain/analyze-store/extract-identity", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: scrapeJson.content }),
-      });
-      const idJson = (await idRes.json()) as { analysisData?: Partial<AnalysisData>; error?: string };
-      if (!idRes.ok) throw new Error(idJson.error || "Identity extract failed");
-      await delay(2000);
-
-      const voiceRes = await fetch("/api/brain/analyze-store/extract-voice", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: scrapeJson.content }),
-      });
-      const voiceJson = (await voiceRes.json()) as { analysisData?: Partial<AnalysisData>; error?: string };
-      if (!voiceRes.ok) throw new Error(voiceJson.error || "Voice extract failed");
-
-      const merged = normalizeFullAnalysis({
-        ...(idJson.analysisData ?? {}),
-        ...(voiceJson.analysisData ?? {}),
-      });
+      const origin = typeof window !== "undefined" ? window.location.origin : "";
+      const { analysisData } = await analyzeAndApplyStore(url, origin);
 
       const chatRes = await fetch("/api/agent/chat", {
         method: "POST",
@@ -145,7 +111,11 @@ export default function AgentPage() {
         body: JSON.stringify({
           sessionId: sid,
           message: "",
-          payload: { kind: "store_analysis", analysisData: merged as unknown as Record<string, unknown> },
+          payload: {
+            kind: "store_analysis",
+            analysisData: analysisData as unknown as Record<string, unknown>,
+            alreadyApplied: true,
+          },
         }),
       });
       const chatJson = (await chatRes.json()) as { session?: Session; error?: string };
@@ -161,7 +131,10 @@ export default function AgentPage() {
     }
   }
 
-  async function sendChat(body: { message: string; payload?: { kind: string; analysisData?: Record<string, unknown> } }) {
+  async function sendChat(body: {
+    message: string;
+    payload?: { kind: string; analysisData?: Record<string, unknown>; alreadyApplied?: boolean };
+  }) {
     if (!session) return;
     setSending(true);
     try {
