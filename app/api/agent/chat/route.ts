@@ -159,7 +159,7 @@ export async function POST(request: Request) {
 💡 **What makes you special:** ${usp}
 🗣️ **Your vibe:** ${voiceDescription}
 
-I've saved all of this to your Brain (that's where I keep everything I learn about you).`;
+I've saved all of this to **My Brain** (that's where I keep everything I learn about you).`;
 
       await prisma.chatMessage.createMany({
         data: [
@@ -475,7 +475,7 @@ I've saved all of this to your Brain (that's where I keep everything I learn abo
         data: {
           sessionId,
           role: "agent",
-          content: "Hit the paperclip to upload PDF, DOCX, or TXT — I'll parse them into your Brain.",
+          content: "Hit the paperclip to upload PDF, DOCX, or TXT — I'll parse them into **My Brain**.",
           messageType: "text",
         },
       });
@@ -558,7 +558,7 @@ I'm ready to work. What do you want to tackle first?`;
           sessionId,
           role: "agent",
           content:
-            "You're in. Hit **The Brain** for profile tweaks, **Store Analyzer** if the site changes, or keep vibing with me here.",
+            "You're in. Open **My Brain** (sidebar) to see everything I've learned, tweak your profile, or hit **Store Analyzer** if the site changes — or keep vibing with me here.",
           messageType: "text",
         },
       });

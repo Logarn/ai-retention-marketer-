@@ -1,5 +1,6 @@
 "use client";
 
+import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -9,6 +10,7 @@ import {
   Brain,
   ChevronDown,
   ChevronRight,
+  GraduationCap,
   LayoutGrid,
   Megaphone,
   Sparkles,
@@ -26,13 +28,14 @@ const navItems = [
   { href: "/templates", label: "Templates", icon: LayoutGrid },
 ];
 
-const brainItems = [
-  { href: "/brain", label: "Overview" },
-  { href: "/brain/profile", label: "Brand Profile" },
-  { href: "/brain/analyzer", label: "Store Analyzer" },
-  { href: "/brain/documents", label: "Documents" },
-  { href: "/brain/test", label: "Voice Test" },
-  { href: "/brain/competitors", label: "Competitors" },
+const brainItems: Array<{ href: string; label: string; icon: LucideIcon }> = [
+  { href: "/brain/learned", label: "What I learned", icon: GraduationCap },
+  { href: "/brain", label: "Overview", icon: Brain },
+  { href: "/brain/profile", label: "Brand Profile", icon: Brain },
+  { href: "/brain/analyzer", label: "Store Analyzer", icon: Brain },
+  { href: "/brain/documents", label: "Documents", icon: Brain },
+  { href: "/brain/test", label: "Voice Test", icon: Brain },
+  { href: "/brain/competitors", label: "Competitors", icon: Brain },
 ];
 
 export function LayoutShell({ children }: { children: React.ReactNode }) {
@@ -101,7 +104,7 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
                     size={16}
                     className={pathname.startsWith("/brain") ? "text-orange-300" : "text-slate-400"}
                   />
-                  The Brain
+                  My Brain
                 </span>
                 {brainExpanded ? (
                   <ChevronDown size={16} className="text-slate-400" />
@@ -114,17 +117,19 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
                 <div id="brain-subnav" className="mt-1 space-y-1 border-l border-white/10 pl-3">
                   {brainItems.map((item) => {
                     const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+                    const SubIcon = item.icon;
                     return (
                       <Link
                         key={item.href}
                         href={item.href}
                         className={cn(
-                          "flex items-center rounded-lg px-3 py-2 text-sm transition-colors",
+                          "flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors",
                           active
                             ? "bg-white/10 text-orange-100"
                             : "text-slate-300 hover:bg-white/5 hover:text-slate-100",
                         )}
                       >
+                        <SubIcon size={14} className={active ? "text-orange-300/90" : "text-slate-500"} />
                         {item.label}
                       </Link>
                     );

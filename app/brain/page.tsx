@@ -55,7 +55,7 @@ export default function BrainOverviewPage() {
       name: "Overview",
       href: "/brain",
       icon: Gauge,
-      description: "Monitor Brand Brain completeness and freshness at a glance.",
+      description: "Monitor My Brain completeness and freshness at a glance.",
       score: calculateSectionScore(data?.profile, "overview"),
     },
     {
@@ -106,7 +106,7 @@ export default function BrainOverviewPage() {
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight text-zinc-100">
             <Brain className="h-6 w-6 text-violet-300" />
-            The Brain
+            My Brain
           </h1>
           <p className="mt-1 text-sm text-zinc-400">
             Central intelligence hub for voice, strategy, and high-converting brand memory.
@@ -121,7 +121,7 @@ export default function BrainOverviewPage() {
         <Card className="border-red-300/30 bg-red-300/10">
           <CardContent className="flex items-center gap-2 pt-6 text-red-100">
             <AlertTriangle className="h-4 w-4" />
-            Failed to load Brain overview.
+            Failed to load My Brain overview.
           </CardContent>
         </Card>
       )}

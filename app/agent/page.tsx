@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Paperclip, Plus, SendHorizontal, Sparkles } from "lucide-react";
+import { Brain, Loader2, Paperclip, Plus, SendHorizontal, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { THINKING_MESSAGES } from "@/lib/agent/worklin";
@@ -231,20 +231,29 @@ export default function AgentPage() {
           {toast}
         </div>
       ) : null}
-      <header className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3 md:px-6">
-        <div className="flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500/30 to-orange-500/20 text-lg">
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3 md:px-6">
+        <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500/30 to-orange-500/20 text-lg">
             ✨
           </div>
-          <div>
+          <div className="min-w-0">
             <h1 className="text-sm font-semibold text-zinc-100">Worklin</h1>
             <p className="text-[11px] text-zinc-500">Retention marketing agent</p>
           </div>
         </div>
-        <Button type="button" variant="outline" className="h-9 gap-2 text-xs" onClick={() => void newChat()}>
-          <Plus className="h-4 w-4" />
-          New Chat
-        </Button>
+        <div className="flex w-full shrink-0 items-center justify-end gap-2 sm:w-auto">
+          <Link
+            href="/brain/learned"
+            className="inline-flex h-9 items-center gap-2 rounded-xl border border-violet-400/35 bg-violet-500/10 px-3 text-xs font-semibold text-violet-100 transition-colors hover:bg-violet-500/20"
+          >
+            <Brain className="h-4 w-4 text-violet-300" />
+            My Brain
+          </Link>
+          <Button type="button" variant="outline" className="h-9 gap-2 text-xs" onClick={() => void newChat()}>
+            <Plus className="h-4 w-4" />
+            New Chat
+          </Button>
+        </div>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-8">
@@ -365,10 +374,15 @@ export default function AgentPage() {
           </Button>
         </div>
         <p className="mx-auto mt-2 max-w-3xl text-center text-[11px] text-zinc-600">
-          Store scans run in your browser (fast, no timeouts). Need more?{" "}
+          Store scans run in your browser (fast, no timeouts). See everything Worklin has saved in{" "}
+          <Link href="/brain/learned" className="font-semibold text-violet-300 underline-offset-2 hover:underline">
+            My Brain
+          </Link>{" "}
+          or edit{" "}
           <Link href="/brain/profile" className="text-indigo-400 underline-offset-2 hover:underline">
             Brand Profile
           </Link>
+          .
         </p>
       </form>
     </div>

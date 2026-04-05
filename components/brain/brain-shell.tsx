@@ -7,6 +7,7 @@ import {
   ClipboardList,
   FileText,
   Gauge,
+  GraduationCap,
   Mic2,
   ShieldCheck,
   ShoppingBag,
@@ -15,6 +16,7 @@ import {
 import { cn } from "@/lib/utils";
 
 const brainNavItems = [
+  { href: "/brain/learned", label: "What I learned", icon: GraduationCap },
   { href: "/brain", label: "Overview", icon: Gauge },
   { href: "/brain/profile", label: "Brand Profile", icon: Brain },
   { href: "/brain/voice", label: "Voice & Tone", icon: Mic2 },
@@ -38,7 +40,7 @@ export function BrainShell({ children }: { children: React.ReactNode }) {
             </p>
             <h1 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
               <Brain size={18} className="text-indigo-300" />
-              Brand Brain
+              My Brain
             </h1>
           </div>
           <nav className="space-y-1">

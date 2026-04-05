@@ -493,7 +493,7 @@ export default function BrainProfilePage() {
             Core Identity
           </CardTitle>
           <CardDescription>
-            Core identity inputs used across all Brain systems.
+            Core identity inputs used across all My Brain systems.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
