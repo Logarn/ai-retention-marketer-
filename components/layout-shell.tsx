@@ -11,11 +11,13 @@ import {
   ChevronRight,
   LayoutGrid,
   Megaphone,
+  Sparkles,
   Users2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
+  { href: "/agent", label: "Agent", icon: Sparkles },
   { href: "/dashboard", label: "Dashboard", icon: LayoutGrid },
   { href: "/customers", label: "Customers", icon: Users2 },
   { href: "/segments", label: "Segments", icon: BarChart3 },
@@ -35,6 +37,7 @@ const brainItems = [
 
 export function LayoutShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const fullBleed = pathname === "/agent";
   const [brainExpanded, setBrainExpanded] = useState(pathname.startsWith("/brain"));
 
   useEffect(() => {
@@ -45,8 +48,16 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen">
-      <div className="mx-auto grid max-w-[1440px] grid-cols-1 gap-6 p-4 md:grid-cols-[250px_1fr] md:p-6">
-        <aside className="sticky top-6 h-fit rounded-2xl border border-white/10 bg-gradient-to-b from-[#121a28]/95 to-[#0d131f]/95 p-4 shadow-[0_20px_70px_rgba(2,6,23,0.55)] backdrop-blur-xl">
+      <div
+        className={`mx-auto grid max-w-[1440px] grid-cols-1 md:grid-cols-[250px_1fr] ${
+          fullBleed ? "gap-0 p-0 md:p-0" : "gap-6 p-4 md:p-6"
+        }`}
+      >
+        <aside
+          className={`sticky top-6 h-fit rounded-2xl border border-white/10 bg-gradient-to-b from-[#121a28]/95 to-[#0d131f]/95 shadow-[0_20px_70px_rgba(2,6,23,0.55)] backdrop-blur-xl ${
+            fullBleed ? "m-4 p-4 md:m-6" : "p-4"
+          }`}
+        >
           <div className="mb-6 space-y-1 border-b border-white/10 pb-4">
             <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">Retention Suite</p>
             <h1 className="text-lg font-semibold text-slate-100">Retention AI</h1>
@@ -127,7 +138,15 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
             <p className="mt-1 text-sm font-medium text-slate-200">Reduce churn, grow repeat revenue.</p>
           </div>
         </aside>
-        <main className="space-y-6 pb-8">{children}</main>
+        <main
+          className={
+            fullBleed
+              ? "flex min-h-[calc(100vh-0px)] flex-col overflow-hidden pb-0 md:min-h-screen"
+              : "space-y-6 pb-8"
+          }
+        >
+          {children}
+        </main>
       </div>
     </div>
   );
