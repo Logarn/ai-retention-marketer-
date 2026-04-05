@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { CheckCircle2, ChevronRight, Loader2, RefreshCcw, Search, Sparkles } from "lucide-react";
+import { normalizeFullAnalysis, type AnalysisData } from "@/lib/brain/analyze-store-normalize";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -52,26 +53,22 @@ type PageResult = {
   error?: string;
 };
 
-type AnalyzerResponse = {
-  analysisData: Record<string, unknown>;
-  crawledPages: Array<{
-    url: string;
-    label?: string;
-    status: "success" | "failed";
-    error?: string;
-    chars?: number;
-    source?: "homepage" | "discovered" | "fallback";
-    contentLength?: number;
-  }>;
+type CrawledPageRow = {
+  url: string;
+  label?: string;
+  status: "success" | "failed";
+  error?: string;
+  chars?: number;
+  source?: "homepage" | "discovered" | "fallback";
+  contentLength?: number;
+};
+
+type AnalyzerResult = {
+  analysisData: AnalysisData;
+  crawledPages: CrawledPageRow[];
   pagesAttempted?: number;
   pagesSuccessful?: number;
-  normalizedUrl?: string;
-  source?: string;
-  error?: string;
-  step?: string;
-  detail?: string;
   rawSnippet?: string;
-  totalCharsAnalyzed?: number;
 };
 
 type ApplySection =
@@ -100,14 +97,17 @@ const fetcher = async (url: string) => {
 };
 
 const PROGRESS_STEPS = [
-  "Connecting to store...",
-  "Crawling homepage...",
-  "Finding key pages...",
-  "Crawling key pages...",
-  "Analyzing brand elements...",
-  "Extracting brand voice...",
-  "Complete!",
-];
+  { id: "scrape", label: "Crawling homepage..." },
+  { id: "identity", label: "Analyzing brand identity..." },
+  { id: "voice", label: "Extracting brand voice..." },
+  { id: "done", label: "Complete!" },
+] as const;
+
+type StepId = (typeof PROGRESS_STEPS)[number]["id"];
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function scalar(value: unknown) {
   return typeof value === "string" || typeof value === "number" ? String(value) : "";
@@ -161,13 +161,19 @@ function MiniVoiceMeter({ label, value }: { label: string; value: number }) {
 export default function BrainAnalyzerPage() {
   const { data: profileData } = useSWR<BrandProfileResponse>("/api/brain/profile", fetcher);
   const [storeUrl, setStoreUrl] = useState("");
-  const [analysisResult, setAnalysisResult] = useState<AnalyzerResponse | null>(null);
+  const [analysisResult, setAnalysisResult] = useState<AnalyzerResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [applyMessage, setApplyMessage] = useState<string | null>(null);
-  const [progressIndex, setProgressIndex] = useState(0);
+  const [stepPhase, setStepPhase] = useState<Record<StepId, "pending" | "running" | "complete" | "error">>({
+    scrape: "pending",
+    identity: "pending",
+    voice: "pending",
+    done: "pending",
+  });
   const [expandedPages, setExpandedPages] = useState(false);
+  const [debugSnippet, setDebugSnippet] = useState<string | null>(null);
   const [selectedSections, setSelectedSections] = useState<Record<ApplySection, boolean>>({
     identity: true,
     audience: true,
@@ -182,15 +188,6 @@ export default function BrainAnalyzerPage() {
     if (!profileData?.profile.shopifyUrl) return;
     setStoreUrl((current) => current || profileData.profile.shopifyUrl || "");
   }, [profileData?.profile.shopifyUrl]);
-
-  useEffect(() => {
-    if (!isAnalyzing) return;
-    setProgressIndex(0);
-    const timer = window.setInterval(() => {
-      setProgressIndex((current) => Math.min(PROGRESS_STEPS.length - 1, current + 1));
-    }, 2200);
-    return () => window.clearInterval(timer);
-  }, [isAnalyzing]);
 
   const selectedSectionList = useMemo(
     () =>
@@ -216,30 +213,119 @@ export default function BrainAnalyzerPage() {
     setError(null);
     setApplyMessage(null);
     setAnalysisResult(null);
+    setDebugSnippet(null);
     setExpandedPages(false);
     setIsAnalyzing(true);
+    setStepPhase({
+      scrape: "pending",
+      identity: "pending",
+      voice: "pending",
+      done: "pending",
+    });
 
     try {
-      const response = await fetchWithTimeout(
-        "/api/brain/analyze-store",
+      setStepPhase((p) => ({ ...p, scrape: "running" }));
+      const scrapeRes = await fetchWithTimeout(
+        "/api/brain/analyze-store/scrape",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url: storeUrl.trim() }),
         },
-        60000,
+        30000,
       );
-      const json = (await response.json().catch(() => ({}))) as AnalyzerResponse;
-      if (!response.ok) {
-        const stepLabel = json.step ? `[${json.step}] ` : "";
-        const detail = json.detail ? ` (${json.detail})` : "";
-        throw new Error(`${stepLabel}${json.error || "Analyzer failed."}${detail}`);
+      const scrapeJson = (await scrapeRes.json().catch(() => ({}))) as {
+        content?: string;
+        pageUrl?: string;
+        error?: string;
+        step?: string;
+      };
+      if (!scrapeRes.ok || !scrapeJson.content) {
+        const msg = `[${scrapeJson.step ?? "scrape"}] ${scrapeJson.error || "Homepage scrape failed."}`;
+        setStepPhase((p) => ({ ...p, scrape: "error" }));
+        setError(msg);
+        return;
       }
-      setAnalysisResult(json);
-      setProgressIndex(PROGRESS_STEPS.length - 1);
+      setStepPhase((p) => ({ ...p, scrape: "complete", identity: "running" }));
+
+      await delay(2000);
+
+      const identityRes = await fetchWithTimeout(
+        "/api/brain/analyze-store/extract-identity",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: scrapeJson.content }),
+        },
+        30000,
+      );
+      const identityJson = (await identityRes.json().catch(() => ({}))) as {
+        analysisData?: Partial<AnalysisData>;
+        error?: string;
+        step?: string;
+        rawSnippet?: string;
+      };
+      if (!identityRes.ok) {
+        setStepPhase((p) => ({ ...p, identity: "error" }));
+        setError(
+          `[${identityJson.step ?? "extract_identity"}] ${identityJson.error || "Identity extraction failed."}`,
+        );
+        if (identityJson.rawSnippet) setDebugSnippet(identityJson.rawSnippet);
+        return;
+      }
+
+      setStepPhase((p) => ({ ...p, identity: "complete", voice: "running" }));
+
+      await delay(2000);
+
+      const voiceRes = await fetchWithTimeout(
+        "/api/brain/analyze-store/extract-voice",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: scrapeJson.content }),
+        },
+        30000,
+      );
+      const voiceJson = (await voiceRes.json().catch(() => ({}))) as {
+        analysisData?: Partial<AnalysisData>;
+        error?: string;
+        step?: string;
+        rawSnippet?: string;
+      };
+      if (!voiceRes.ok) {
+        setStepPhase((p) => ({ ...p, voice: "error" }));
+        setError(`[${voiceJson.step ?? "extract_voice"}] ${voiceJson.error || "Voice extraction failed."}`);
+        if (voiceJson.rawSnippet) setDebugSnippet(voiceJson.rawSnippet);
+        return;
+      }
+
+      const merged = normalizeFullAnalysis({
+        ...(identityJson.analysisData ?? {}),
+        ...(voiceJson.analysisData ?? {}),
+      });
+
+      const crawledPages: CrawledPageRow[] = [
+        {
+          url: scrapeJson.pageUrl ?? normalizeUrl(storeUrl),
+          label: "Homepage",
+          status: "success",
+          chars: scrapeJson.content.length,
+          contentLength: scrapeJson.content.length,
+          source: "homepage",
+        },
+      ];
+
+      setStepPhase({ scrape: "complete", identity: "complete", voice: "complete", done: "complete" });
+      setAnalysisResult({
+        analysisData: merged,
+        crawledPages,
+        pagesAttempted: 1,
+        pagesSuccessful: 1,
+      });
     } catch (analyzeError) {
       if (analyzeError instanceof DOMException && analyzeError.name === "AbortError") {
-        setError("Analyzer timed out after 60 seconds. Try again or use a shorter URL.");
+        setError("A request timed out. Check your connection and try again.");
       } else {
         setError(analyzeError instanceof Error ? analyzeError.message : "Analyzer failed.");
       }
@@ -273,7 +359,7 @@ export default function BrainAnalyzerPage() {
     }
   }
 
-  const analysis = analysisResult?.analysisData ?? {};
+  const analysis: Partial<AnalysisData> = analysisResult?.analysisData ?? {};
   const pages = analysisResult?.crawledPages ?? [];
   const successfulPages = pages.filter((page) => page.status === "success");
   const failedPages = pages.filter((page) => page.status === "failed");
@@ -330,20 +416,21 @@ export default function BrainAnalyzerPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          {PROGRESS_STEPS.map((step, index) => {
-            const status =
-              index < progressIndex ? "complete" : index === progressIndex && (isAnalyzing || analysisResult) ? "running" : "pending";
+          {PROGRESS_STEPS.map((step) => {
+            const phase = stepPhase[step.id];
+            const badgeVariant =
+              phase === "complete"
+                ? "success"
+                : phase === "running"
+                  ? "warning"
+                  : phase === "error"
+                    ? "destructive"
+                    : "outline";
             return (
-              <div key={step} className="rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2">
+              <div key={step.id} className="rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-medium text-zinc-100">{step}</p>
-                  <Badge
-                    variant={
-                      status === "complete" ? "success" : status === "running" ? "warning" : "outline"
-                    }
-                  >
-                    {status}
-                  </Badge>
+                  <p className="text-sm font-medium text-zinc-100">{step.label}</p>
+                  <Badge variant={badgeVariant}>{phase}</Badge>
                 </div>
               </div>
             );
@@ -351,11 +438,19 @@ export default function BrainAnalyzerPage() {
           <div className="h-2 rounded-full bg-white/10">
             <div
               className="h-2 rounded-full bg-gradient-to-r from-indigo-400 to-orange-300 transition-all"
-              style={{ width: `${Math.round(((progressIndex + 1) / PROGRESS_STEPS.length) * 100)}%` }}
+              style={{
+                width: `${Math.round(
+                  (PROGRESS_STEPS.filter((s) => stepPhase[s.id] === "complete").length /
+                    PROGRESS_STEPS.length) *
+                    100,
+                )}%`,
+              }}
             />
           </div>
           {isAnalyzing ? (
-            <p className="text-sm text-zinc-300">Running analysis. This can take 15-30 seconds.</p>
+            <p className="text-sm text-zinc-300">
+              Running analysis in three quick steps (each server call stays within Vercel&apos;s limits).
+            </p>
           ) : null}
         </CardContent>
       </Card>
@@ -608,11 +703,11 @@ export default function BrainAnalyzerPage() {
               </Link>
             </div>
           ) : null}
-          {analysisResult?.rawSnippet ? (
+          {debugSnippet ? (
             <details className="rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3">
               <summary className="cursor-pointer text-xs text-zinc-300">Model response snippet</summary>
               <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-zinc-400">
-                {analysisResult.rawSnippet}
+                {debugSnippet}
               </pre>
             </details>
           ) : null}
