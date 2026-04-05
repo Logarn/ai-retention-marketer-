@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { CheckCircle2, ChevronRight, Loader2, RefreshCcw, Search, Sparkles } from "lucide-react";
+import { CheckCircle2, ChevronRight, Loader2, RefreshCcw, Search, Sparkles, Trash2 } from "lucide-react";
 import { normalizeFullAnalysis, type AnalysisData } from "@/lib/brain/analyze-store-normalize";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -105,6 +105,51 @@ const PROGRESS_STEPS = [
 
 type StepId = (typeof PROGRESS_STEPS)[number]["id"];
 
+const STORAGE_KEY = "brain-analyzer-session-v1";
+
+type PersistedSession = {
+  v: 1;
+  storeUrl: string;
+  analysisResult: AnalyzerResult;
+  stepPhase: Record<StepId, "pending" | "running" | "complete" | "error">;
+  selectedSections: Record<ApplySection, boolean>;
+  expandedPages: boolean;
+  applyMessage: string | null;
+};
+
+const COMPLETE_PHASE: Record<StepId, "complete"> = {
+  scrape: "complete",
+  identity: "complete",
+  voice: "complete",
+  done: "complete",
+};
+
+function readPersistedSession(): PersistedSession | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw) as PersistedSession;
+    if (data?.v !== 1 || !data.analysisResult?.analysisData) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function writePersistedSession(session: PersistedSession | null) {
+  if (typeof window === "undefined") return;
+  try {
+    if (!session) {
+      localStorage.removeItem(STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+  } catch {
+    // quota / private mode
+  }
+}
+
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -160,6 +205,7 @@ function MiniVoiceMeter({ label, value }: { label: string; value: number }) {
 
 export default function BrainAnalyzerPage() {
   const { data: profileData } = useSWR<BrandProfileResponse>("/api/brain/profile", fetcher);
+  const [hydrated, setHydrated] = useState(false);
   const [storeUrl, setStoreUrl] = useState("");
   const [analysisResult, setAnalysisResult] = useState<AnalyzerResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -184,10 +230,40 @@ export default function BrainAnalyzerPage() {
     emailPrefs: true,
   });
 
+  useLayoutEffect(() => {
+    const saved = readPersistedSession();
+    if (saved) {
+      setStoreUrl(saved.storeUrl);
+      setAnalysisResult(saved.analysisResult);
+      setStepPhase(saved.stepPhase ?? COMPLETE_PHASE);
+      setSelectedSections(saved.selectedSections);
+      setExpandedPages(saved.expandedPages);
+      setApplyMessage(saved.applyMessage);
+    }
+    setHydrated(true);
+  }, []);
+
   useEffect(() => {
     if (!profileData?.profile.shopifyUrl) return;
     setStoreUrl((current) => current || profileData.profile.shopifyUrl || "");
   }, [profileData?.profile.shopifyUrl]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (!analysisResult) {
+      writePersistedSession(null);
+      return;
+    }
+    writePersistedSession({
+      v: 1,
+      storeUrl,
+      analysisResult,
+      stepPhase,
+      selectedSections,
+      expandedPages,
+      applyMessage,
+    });
+  }, [hydrated, analysisResult, storeUrl, stepPhase, selectedSections, expandedPages, applyMessage]);
 
   const selectedSectionList = useMemo(
     () =>
@@ -208,11 +284,27 @@ export default function BrainAnalyzerPage() {
     }
   }
 
+  function clearSavedSession() {
+    writePersistedSession(null);
+    setAnalysisResult(null);
+    setApplyMessage(null);
+    setError(null);
+    setDebugSnippet(null);
+    setExpandedPages(false);
+    setStepPhase({
+      scrape: "pending",
+      identity: "pending",
+      voice: "pending",
+      done: "pending",
+    });
+  }
+
   async function analyzeStore() {
     if (!storeUrl.trim() || isAnalyzing) return;
     setError(null);
     setApplyMessage(null);
     setAnalysisResult(null);
+    writePersistedSession(null);
     setDebugSnippet(null);
     setExpandedPages(false);
     setIsAnalyzing(true);
@@ -692,6 +784,10 @@ export default function BrainAnalyzerPage() {
             >
               <RefreshCcw className="h-4 w-4" />
               Re-analyze
+            </Button>
+            <Button type="button" variant="outline" onClick={() => clearSavedSession()} className="text-zinc-400">
+              <Trash2 className="h-4 w-4" />
+              Clear results
             </Button>
           </div>
 
