@@ -200,6 +200,17 @@ export default function BrainAnalyzerPage() {
     [selectedSections],
   );
 
+  async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit, timeoutMs: number) {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(input, { ...init, signal: controller.signal });
+      return response;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+
   async function analyzeStore() {
     if (!storeUrl.trim() || isAnalyzing) return;
     setError(null);
@@ -209,11 +220,15 @@ export default function BrainAnalyzerPage() {
     setIsAnalyzing(true);
 
     try {
-      const response = await fetch("/api/brain/analyze-store", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: storeUrl.trim() }),
-      });
+      const response = await fetchWithTimeout(
+        "/api/brain/analyze-store",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: storeUrl.trim() }),
+        },
+        60000,
+      );
       const json = (await response.json().catch(() => ({}))) as AnalyzerResponse;
       if (!response.ok) {
         const stepLabel = json.step ? `[${json.step}] ` : "";
@@ -223,7 +238,11 @@ export default function BrainAnalyzerPage() {
       setAnalysisResult(json);
       setProgressIndex(PROGRESS_STEPS.length - 1);
     } catch (analyzeError) {
-      setError(analyzeError instanceof Error ? analyzeError.message : "Analyzer failed.");
+      if (analyzeError instanceof DOMException && analyzeError.name === "AbortError") {
+        setError("Analyzer timed out after 60 seconds. Try again or use a shorter URL.");
+      } else {
+        setError(analyzeError instanceof Error ? analyzeError.message : "Analyzer failed.");
+      }
     } finally {
       setIsAnalyzing(false);
     }

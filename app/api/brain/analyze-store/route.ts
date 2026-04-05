@@ -3,10 +3,12 @@ import { z } from "zod";
 import Firecrawl from "@mendable/firecrawl-js";
 import { groqClient, GROQ_MODEL } from "@/lib/ai";
 
+export const maxDuration = 60;
+
 const STORE_ID = "default";
 const MAX_PAGES = 8;
-const MAX_PAGE_MARKDOWN_CHARS = 3000;
-const MAX_COMBINED_MARKDOWN_CHARS = 15000;
+const MAX_PAGE_MARKDOWN_CHARS = 2000;
+const MAX_COMBINED_MARKDOWN_CHARS = 10000;
 const GROQ_RETRY_ATTEMPTS = 3;
 
 const requestSchema = z.object({
@@ -146,7 +148,8 @@ function stripBoilerplate(markdown: string) {
   const linkAndMediaStripped = markdown
     .replace(/!\[[^\]]*]\([^)]+\)/g, " ")
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
-    .replace(/https?:\/\/\S+/g, " ");
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/<[^>]+>/g, " ");
 
   const lines = linkAndMediaStripped.replace(/\r/g, "").split("\n");
   const kept: string[] = [];
@@ -187,7 +190,12 @@ function stripBoilerplate(markdown: string) {
     collapsed.push(line);
   }
 
-  return collapsed.join("\n").trim();
+  const collapsedText = collapsed.join("\n").trim();
+  // Strip remaining markdown formatting aggressively to plain text.
+  return collapsedText
+    .replace(/[#>*`_~=-]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
 function classifyChunkPriority(chunk: ScrapedChunk) {

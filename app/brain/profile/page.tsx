@@ -250,6 +250,7 @@ export default function BrainProfilePage() {
   const [error, setError] = useState<string | null>(null);
   const [state, setState] = useState<LocalState | null>(null);
   const saveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastSentRef = useRef<Partial<LocalState>>({});
 
   const ctas = data?.ctas ?? [];
   const phrases = data?.phrases ?? [];
@@ -298,6 +299,37 @@ export default function BrainProfilePage() {
       void saveProfilePatch(next);
     }, 500);
   }
+
+  function debouncedAutosave(next: Partial<LocalState>) {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+    }
+    saveTimerRef.current = setTimeout(() => {
+      const pending: Partial<LocalState> = {};
+      for (const [key, value] of Object.entries(next)) {
+        const typedKey = key as keyof LocalState;
+        if (lastSentRef.current[typedKey] !== value) {
+          pending[typedKey] = value as never;
+        }
+      }
+      if (Object.keys(pending).length === 0) return;
+      lastSentRef.current = { ...lastSentRef.current, ...pending };
+      void saveProfilePatch(pending);
+    }, 1000);
+  }
+
+  useEffect(() => {
+    const flush = () => {
+      if (!saveTimerRef.current) return;
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+      if (!state) return;
+      // Best-effort: persist the latest local state snapshot before navigation/unload.
+      void saveProfilePatch({ ...state });
+    };
+    window.addEventListener("beforeunload", flush);
+    return () => window.removeEventListener("beforeunload", flush);
+  }, [state]);
 
   async function addCta(text: string) {
     if (!text.trim()) return;
