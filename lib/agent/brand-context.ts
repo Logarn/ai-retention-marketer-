@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { DEFAULT_STORE_ID } from "../../app/api/brain/profile/store";
+import { DEFAULT_STORE_ID } from "@/app/api/brain/profile/store";
 
 export async function loadBrandContextForAgent() {
   const profile = await prisma.brandProfile.findUnique({
