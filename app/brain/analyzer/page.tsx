@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 type ProfilePayload = {
   brandName: string | null;
   tagline: string | null;
+  websiteUrl: string | null;
   industry: string | null;
   niche: string | null;
   brandStory: string | null;
@@ -90,7 +91,6 @@ const STORAGE_KEY = "brain-analyzer-session-v1";
 
 type PersistedSession = {
   v: 1;
-  storeUrl: string;
   analysisResult: AnalyzerResult;
   stepPhase: Record<StepId, "pending" | "running" | "complete" | "error">;
   expandedPages: boolean;
@@ -185,7 +185,15 @@ function MiniVoiceMeter({ label, value }: { label: string; value: number }) {
 }
 
 export default function BrainAnalyzerPage() {
-  const { data: profileData, mutate: mutateProfile } = useSWR<BrandProfileResponse>("/api/brain/profile", fetcher);
+  const { data: profileData, mutate: mutateProfile } = useSWR<BrandProfileResponse>(
+    "/api/brain/profile",
+    fetcher,
+    {
+      revalidateOnFocus: true,
+      revalidateOnMount: true,
+      dedupingInterval: 0,
+    },
+  );
   const [hydrated, setHydrated] = useState(false);
   const [storeUrl, setStoreUrl] = useState("");
   const [analysisResult, setAnalysisResult] = useState<AnalyzerResult | null>(null);
@@ -202,10 +210,10 @@ export default function BrainAnalyzerPage() {
   });
   const [expandedPages, setExpandedPages] = useState(false);
   const [debugSnippet, setDebugSnippet] = useState<string | null>(null);
+  const userEditedUrlRef = useRef(false);
   useLayoutEffect(() => {
     const saved = readPersistedSession();
     if (saved) {
-      setStoreUrl(saved.storeUrl);
       setAnalysisResult(saved.analysisResult);
       setStepPhase(saved.stepPhase ?? COMPLETE_PHASE);
       setExpandedPages(saved.expandedPages);
@@ -216,9 +224,12 @@ export default function BrainAnalyzerPage() {
   }, []);
 
   useEffect(() => {
-    if (!profileData?.profile.shopifyUrl) return;
-    setStoreUrl((current) => current || profileData.profile.shopifyUrl || "");
-  }, [profileData?.profile.shopifyUrl]);
+    if (!profileData?.profile || isAnalyzing) return;
+    if (userEditedUrlRef.current) return;
+    const p = profileData.profile;
+    const fromProfile = (p.websiteUrl?.trim() || p.shopifyUrl?.trim() || "").trim();
+    if (fromProfile) setStoreUrl(fromProfile);
+  }, [profileData?.profile, isAnalyzing]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -228,14 +239,13 @@ export default function BrainAnalyzerPage() {
     }
     writePersistedSession({
       v: 1,
-      storeUrl,
       analysisResult,
       stepPhase,
       expandedPages,
       autoApplySuccess,
       createdIds: createdIds ?? undefined,
     });
-  }, [hydrated, analysisResult, storeUrl, stepPhase, expandedPages, autoApplySuccess, createdIds]);
+  }, [hydrated, analysisResult, stepPhase, expandedPages, autoApplySuccess, createdIds]);
 
   async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit, timeoutMs: number) {
     const controller = new AbortController();
@@ -249,6 +259,7 @@ export default function BrainAnalyzerPage() {
   }
 
   function clearSavedSession() {
+    userEditedUrlRef.current = false;
     writePersistedSession(null);
     setAnalysisResult(null);
     setAutoApplySuccess(false);
@@ -366,7 +377,10 @@ export default function BrainAnalyzerPage() {
       const applyRes = await fetch("/api/brain/analyze-store/auto-apply", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ analysisData: merged }),
+        body: JSON.stringify({
+          analysisData: merged,
+          analyzedUrl: scrapeJson.pageUrl ?? normalizeUrl(storeUrl.trim()),
+        }),
       });
       const applyJson = (await applyRes.json().catch(() => ({}))) as {
         success?: boolean;
@@ -384,6 +398,9 @@ export default function BrainAnalyzerPage() {
           ctas: applyJson.createdIds?.ctas ?? [],
           phrases: applyJson.createdIds?.phrases ?? [],
         });
+        const canonicalUrl = scrapeJson.pageUrl ?? normalizeUrl(storeUrl.trim());
+        userEditedUrlRef.current = false;
+        setStoreUrl(canonicalUrl);
         void mutateProfile();
       }
 
@@ -465,8 +482,8 @@ export default function BrainAnalyzerPage() {
         <CardHeader>
           <CardTitle>Analyze Store</CardTitle>
           <CardDescription>
-            {profileData?.profile.shopifyUrl
-              ? "Shopify URL auto-loaded from your Brand Profile."
+            {profileData?.profile?.websiteUrl?.trim() || profileData?.profile?.shopifyUrl?.trim()
+              ? "URL loaded from your latest Brand Profile (Website or Shopify)."
               : "Enter your store URL to start analysis."}
           </CardDescription>
         </CardHeader>
@@ -474,7 +491,10 @@ export default function BrainAnalyzerPage() {
           <div className="flex flex-col gap-3 md:flex-row">
             <Input
               value={storeUrl}
-              onChange={(event) => setStoreUrl(event.target.value)}
+              onChange={(event) => {
+                userEditedUrlRef.current = true;
+                setStoreUrl(event.target.value);
+              }}
               placeholder="https://your-store.myshopify.com"
             />
             <Button onClick={() => void analyzeStore()} disabled={isAnalyzing || !storeUrl.trim()}>

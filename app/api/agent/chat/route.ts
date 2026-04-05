@@ -18,6 +18,8 @@ const bodySchema = z.object({
       analysisData: z.record(z.string(), z.any()).optional(),
       /** When true, client already called /auto-apply — skip duplicate apply */
       alreadyApplied: z.boolean().optional(),
+      /** Store URL analyzed — required for websiteUrl when server applies */
+      analyzedUrl: z.string().optional(),
     })
     .optional(),
 });
@@ -100,12 +102,16 @@ function voicePresetFromChip(chip: string): Record<string, number> {
   return { voiceFormalCasual: 50, voiceSeriousPlayful: 50 };
 }
 
-async function applyAnalyzeStoreAuto(requestUrl: string, analysisData: Record<string, unknown>) {
+async function applyAnalyzeStoreAuto(
+  requestUrl: string,
+  analysisData: Record<string, unknown>,
+  analyzedUrl?: string,
+) {
   const applyUrl = new URL("/api/brain/analyze-store/auto-apply", requestUrl);
   const res = await fetch(applyUrl.toString(), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ analysisData }),
+    body: JSON.stringify({ analysisData, ...(analyzedUrl ? { analyzedUrl } : {}) }),
   });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
@@ -143,7 +149,7 @@ export async function POST(request: Request) {
       }
 
       if (!alreadyApplied) {
-        await applyAnalyzeStoreAuto(requestUrl, analysis as Record<string, unknown>);
+        await applyAnalyzeStoreAuto(requestUrl, analysis as Record<string, unknown>, payload?.analyzedUrl);
       }
 
       const brandName = String((analysis as { brandName?: string }).brandName ?? "your brand");

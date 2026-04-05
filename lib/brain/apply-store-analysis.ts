@@ -26,6 +26,24 @@ function toSignOffValue(value: "warm" | "professional" | "casual" | "brand" | un
   return value;
 }
 
+/** Normalize store/website URL for BrandProfile.websiteUrl (https origin, trailing slash stripped). */
+function normalizeAnalyzedWebsiteUrl(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const withProto = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const u = new URL(withProto);
+    u.hash = "";
+    u.search = "";
+    let href = u.href;
+    if (href.endsWith("/") && u.pathname !== "/") href = href.slice(0, -1);
+    return href;
+  } catch {
+    return null;
+  }
+}
+
 export type ApplyFullResult = {
   profileUpdated: boolean;
   rulesAdded: number;
@@ -38,8 +56,14 @@ export type ApplyFullResult = {
 
 /**
  * Applies full analyzer output: profile fields + rules + CTAs + phrases (deduped).
+ * When `analyzedUrl` is set, updates BrandProfile.websiteUrl to that URL.
  */
-export async function applyFullStoreAnalysis(analysis: AnalysisData): Promise<ApplyFullResult> {
+export async function applyFullStoreAnalysis(
+  analysis: AnalysisData,
+  options?: { analyzedUrl?: string | null },
+): Promise<ApplyFullResult> {
+  const websiteFromAnalysis = normalizeAnalyzedWebsiteUrl(options?.analyzedUrl ?? undefined);
+
   const profilePatch: Record<string, string | number | null> = {
     brandName: normalizeText(analysis.brandName),
     tagline: normalizeText(analysis.tagline),
@@ -69,6 +93,10 @@ export async function applyFullStoreAnalysis(analysis: AnalysisData): Promise<Ap
     preferredLength: analysis.preferredLength ?? null,
     discountPhilosophy: analysis.discountPhilosophy ?? null,
   };
+
+  if (websiteFromAnalysis) {
+    profilePatch.websiteUrl = websiteFromAnalysis;
+  }
 
   await prisma.brandProfile.upsert({
     where: { storeId: DEFAULT_STORE_ID },

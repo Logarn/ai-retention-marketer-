@@ -7,6 +7,8 @@ export const maxDuration = 10;
 
 const bodySchema = z.object({
   analysisData: z.record(z.string(), z.any()),
+  /** URL that was analyzed — saved to BrandProfile.websiteUrl */
+  analyzedUrl: z.string().min(1).optional(),
 });
 
 export async function POST(request: Request) {
@@ -17,7 +19,9 @@ export async function POST(request: Request) {
     }
 
     const analysis = parsed.data.analysisData as unknown as AnalysisData;
-    const applied = await applyFullStoreAnalysis(analysis);
+    const applied = await applyFullStoreAnalysis(analysis, {
+      analyzedUrl: parsed.data.analyzedUrl ?? null,
+    });
 
     return NextResponse.json({
       success: true,

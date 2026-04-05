@@ -83,7 +83,7 @@ export async function analyzeAndApplyStore(url: string, baseUrl: string): Promis
   const applyRes = await fetch(`${root}/api/brain/analyze-store/auto-apply`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ analysisData }),
+    body: JSON.stringify({ analysisData, analyzedUrl: url.trim() }),
   });
   const applyJson = (await applyRes.json()) as {
     success?: boolean;
