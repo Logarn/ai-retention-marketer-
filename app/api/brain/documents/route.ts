@@ -1,16 +1,19 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { ensureBrandProfileId, mapDocumentResponse } from "@/app/api/brain/documents/shared";
+import { DEFAULT_STORE_ID } from "../profile/store";
+import { listDocumentsForStore, mapDocumentToApi } from "./shared";
 
 export async function GET() {
   try {
-    const brandProfileId = await ensureBrandProfileId();
-    const documents = await prisma.brandDocument.findMany({
-      where: { brandProfileId },
-      orderBy: { createdAt: "desc" },
-    });
+    const documents = await listDocumentsForStore(DEFAULT_STORE_ID);
+    const total = documents.length;
+    const completed = documents.filter((d) => d.status === "completed").length;
     return NextResponse.json({
-      documents: documents.map(mapDocumentResponse),
+      documents: documents.map(mapDocumentToApi),
+      stats: {
+        totalDocuments: total,
+        completedAnalyses: completed,
+      },
     });
   } catch (error) {
     return NextResponse.json(
@@ -31,9 +34,12 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "id query param is required" }, { status: 400 });
     }
 
-    await prisma.brandDocument.delete({
-      where: { id },
+    const deleted = await prisma.brandDocument.deleteMany({
+      where: { id, storeId: DEFAULT_STORE_ID },
     });
+    if (deleted.count === 0) {
+      return NextResponse.json({ error: "Document not found" }, { status: 404 });
+    }
 
     return NextResponse.json({ ok: true, id });
   } catch (error) {

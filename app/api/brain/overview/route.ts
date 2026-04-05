@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { DEFAULT_STORE_ID } from "../profile/store";
 
 export async function GET() {
   try {
@@ -12,9 +13,13 @@ export async function GET() {
         productIntelligence: true,
         compliance: true,
         sellingPoints: true,
-        documents: true,
       },
     });
+
+    const [documentTotal, documentAppliedCount] = await Promise.all([
+      prisma.brandDocument.count({ where: { storeId: DEFAULT_STORE_ID } }),
+      prisma.brandDocument.count({ where: { storeId: DEFAULT_STORE_ID, appliedToProfile: true } }),
+    ]);
 
     if (!profile) {
       return NextResponse.json({
@@ -38,7 +43,7 @@ export async function GET() {
         quickStats: {
           personas: 0,
           sellingPoints: 0,
-          documents: 0,
+          documents: documentTotal,
           requiredFieldsComplete: 0,
           requiredFieldsTotal: 5,
         },
@@ -128,7 +133,7 @@ export async function GET() {
     if (!profile.voiceTone) {
       alerts.push("Set Voice & Tone sliders to keep generated copy consistently on-brand.");
     }
-    if ((profile.documents?.length ?? 0) === 0) {
+    if (documentTotal === 0) {
       alerts.push("Upload brand docs to accelerate intelligence extraction.");
     }
 
@@ -185,29 +190,25 @@ export async function GET() {
         },
         documents: {
           status:
-            profile.documents.length === 0
+            documentTotal === 0
               ? "not_started"
-              : profile.documents.some((doc) => doc.appliedToBrand)
+              : documentAppliedCount > 0
                 ? "complete"
                 : "in_progress",
           score:
-            profile.documents.length === 0
+            documentTotal === 0
               ? 0
               : Math.min(
                   100,
-                  Math.round(
-                    (profile.documents.filter((doc) => doc.appliedToBrand).length /
-                      Math.max(1, profile.documents.length)) *
-                      100,
-                  ),
+                  Math.round((documentAppliedCount / Math.max(1, documentTotal)) * 100),
                 ),
-          totalDocuments: profile.documents.length,
-          appliedDocuments: profile.documents.filter((doc) => doc.appliedToBrand).length,
+          totalDocuments: documentTotal,
+          appliedDocuments: documentAppliedCount,
         },
       },
       quickStats: {
         personas: profile.personas.length,
-        documents: profile.documents.length,
+        documents: documentTotal,
         sellingPoints: profile.sellingPoints.length,
         requiredFieldsComplete,
         requiredFieldsTotal,

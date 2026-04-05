@@ -241,7 +241,6 @@ model BrandProfile {
   seasonalContext      SeasonalContext?
   personas             Persona[]
   sellingPoints        SellingPoint[]
-  documents            BrandDocument[]
 
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
@@ -435,24 +434,22 @@ model SeasonalContext {
 }
 
 model BrandDocument {
-  id                String       @id @default(cuid())
-  brandProfileId    String
-  brandProfile      BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
-  fileName          String
-  fileType          String
-  fileUrl           String
-  fileSize          Int
-  documentType      String?
-  extractedText     String?
-  extractedRules    Json?
-  extractionStatus  String       @default("pending")
-  extractedAt       DateTime?
-  appliedToBrand    Boolean      @default(false)
-  conflictsFound    Json?
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
+  id              String   @id @default(cuid())
+  storeId         String   @default("default")
+  fileName        String
+  fileType        String // "pdf", "docx", "txt"
+  fileSize        Int // bytes
+  fileUrl         String? // Vercel Blob URL or data URL fallback
+  rawText         String   @db.Text
+  summary         String?  @db.Text
+  extractedRules  String?  @db.Text // JSON string of brandInsights from LLM
+  status          String   @default("uploaded") // uploaded, processing, completed, failed
+  appliedToProfile Boolean @default(false)
+  error           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
-  @@index([brandProfileId, createdAt])
+  @@index([storeId, createdAt])
 }
 
 model StoreScreenshot {
