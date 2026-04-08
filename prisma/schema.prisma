@@ -486,3 +486,41 @@ model ChatMessage {
 
   @@index([sessionId, createdAt])
 }
+
+model Competitor {
+  id                  String           @id @default(cuid())
+  storeId             String           @default("default")
+  name                String
+  url                 String
+  industry            String?
+  niche               String?
+  analysis            String?          @db.Text
+  strengths           String?        @db.Text
+  weaknesses          String?        @db.Text
+  whatTheyDoBetter    String?        @db.Text
+  messagingStrategy   String?        @db.Text
+  pricingStrategy     String?        @db.Text
+  emailStrategy       String?        @db.Text
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  competitorEmails    CompetitorEmail[]
+
+  @@unique([storeId, url])
+  @@index([storeId, updatedAt])
+}
+
+model CompetitorEmail {
+  id              String      @id @default(cuid())
+  storeId         String      @default("default")
+  competitorId    String?
+  competitor      Competitor? @relation(fields: [competitorId], references: [id], onDelete: SetNull)
+  competitorName  String?
+  emailContent    String      @db.Text
+  analysis        String?     @db.Text
+  subjectLine     String?
+  emailType       String?
+  createdAt       DateTime    @default(now())
+
+  @@index([storeId, createdAt])
+  @@index([competitorId])
+}

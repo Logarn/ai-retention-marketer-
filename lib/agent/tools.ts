@@ -6,7 +6,7 @@ import { DEFAULT_STORE_ID, ensureBrandProfileForStore } from "@/app/api/brain/pr
 import { runStoreAnalysisPipeline } from "@/lib/agent/analyze-store-pipeline";
 import { generateEmailContentWithGroq } from "@/lib/brain/email-generation-groq";
 import { scrapeHomepagePlainText } from "@/lib/brain/firecrawl-homepage";
-import { extractJsonText } from "@/lib/brain/analyze-store-normalize";
+import { extractJsonText, normalizeInputUrl } from "@/lib/brain/analyze-store-normalize";
 
 const DOCUMENT_ANALYSIS_SYSTEM = `You are a brand analyst. Analyze this brand document and extract any brand guidelines, rules, voice preferences, or marketing insights. Return ONLY valid JSON:
 {
@@ -55,6 +55,69 @@ async function groqJsonObject(system: string, user: string) {
   });
   return res.choices[0]?.message?.content?.trim() ?? "";
 }
+
+function sleep(ms: number) {
+  return new Promise<void>((r) => setTimeout(r, ms));
+}
+
+function safeNormalizeUrl(raw: string): string | null {
+  try {
+    return normalizeInputUrl(raw).normalized;
+  } catch {
+    return null;
+  }
+}
+
+function stringifyList(arr: unknown): string | null {
+  if (!Array.isArray(arr)) return null;
+  const lines = arr.map((x) => String(x).trim()).filter(Boolean);
+  return lines.length ? lines.map((l) => `• ${l}`).join("\n") : null;
+}
+
+const COMPETITOR_DEEP_SYSTEM = `You are a CMO analyzing a competitor vs our brand. Return ONLY valid JSON with these keys (all strings except strengths, weaknesses which are string arrays):
+{
+  "analysis": "2-4 sentences: who they are and how they position",
+  "strengths": ["..."],
+  "weaknesses": ["..."],
+  "whatTheyDoBetter": "what they execute better than us and why it matters",
+  "messagingStrategy": "headline/value prop patterns",
+  "pricingStrategy": "inferred pricing/promo approach",
+  "emailStrategy": "signals for email/SMS (frequency, tone) if visible; otherwise best guess from site"
+}`;
+
+type CompetitorDeepJson = {
+  analysis?: string;
+  strengths?: string[];
+  weaknesses?: string[];
+  whatTheyDoBetter?: string;
+  messagingStrategy?: string;
+  pricingStrategy?: string;
+  emailStrategy?: string;
+};
+
+function parseCompetitorDeep(raw: string): CompetitorDeepJson | null {
+  const json = extractJsonText(raw);
+  if (!json) return null;
+  try {
+    return JSON.parse(json) as CompetitorDeepJson;
+  } catch {
+    return null;
+  }
+}
+
+const EMAIL_ANALYSIS_SYSTEM = `Return ONLY valid JSON:
+{
+  "subjectLine": "best guess or extracted subject",
+  "emailType": "promotional|welcome|abandoned_cart|newsletter|other",
+  "analysis": "2-4 sentences: overall take",
+  "subjectLineStrategy": "...",
+  "tone": "...",
+  "offerType": "...",
+  "ctaApproach": "...",
+  "urgencyTactics": ["..."],
+  "personalizationLevel": "...",
+  "takeaways": ["..."]
+}`;
 
 /** Scalar BrandProfile fields only — avoids huge nested JSON / relation payloads in tool results. */
 const brandProfileSelect = {
@@ -327,84 +390,291 @@ export const worklinTools = {
 
   findCompetitors: tool({
     description:
-      "Find top competitors in the niche with CMO-level analysis (positioning, strengths, what they do better).",
+      "Discover 3 competitors (Groq), scrape each homepage with Firecrawl, run CMO-level analysis (Groq), and save rows to Competitor. Slow (30–90s).",
     inputSchema: z.object({
       industry: z.string().min(1),
       niche: z.string().min(1),
       brandName: z.string().min(1),
     }),
     execute: async ({ industry, niche, brandName }) => {
+      const storeId = DEFAULT_STORE_ID;
+      console.log("[tools/findCompetitors] start", { storeId, industry, niche, brandName });
       try {
-        const raw = await groqJsonObject(
-          `Return ONLY JSON: { "competitors": [ { "name": string, "url": string, "analysis": string, "strengths": string[], "whatTheyDoBetter": string } ] } with exactly 3 competitors.`,
-          `Brand: ${brandName}\nIndustry: ${industry}\nNiche: ${niche}\n\nIdentify 3 strong competitors outperforming in this space. Be specific and actionable.`,
+        if (!groqClient) throw new Error("GROQ_API_KEY is not configured.");
+
+        const listRaw = await groqJsonObject(
+          `Return ONLY JSON: { "competitors": [ { "name": string, "url": string } ] } with exactly 3 items. Each url must be a real https homepage (canonical domain). No placeholders.`,
+          `Brand: ${brandName}\nIndustry: ${industry}\nNiche: ${niche}\n\nList 3 direct competitors shoppers would compare. Prefer DTC sites.`,
         );
-        const json = extractJsonText(raw);
-        if (!json) return { error: "Could not parse competitor JSON" };
-        const parsed = JSON.parse(json) as {
-          competitors?: Array<{
-            name?: string;
-            url?: string;
-            analysis?: string;
-            strengths?: string[];
-            whatTheyDoBetter?: string;
-          }>;
+        const listJson = extractJsonText(listRaw);
+        if (!listJson) return { error: "Could not parse competitor list JSON" };
+        const listParsed = JSON.parse(listJson) as {
+          competitors?: Array<{ name?: string; url?: string }>;
         };
-        return {
-          competitors: (parsed.competitors ?? []).slice(0, 3).map((c) => ({
-            name: c.name ?? "",
-            url: c.url ?? "",
-            analysis: c.analysis ?? "",
-            strengths: Array.isArray(c.strengths) ? c.strengths.map(String) : [],
-            whatTheyDoBetter: c.whatTheyDoBetter ?? "",
-          })),
-        };
+        const candidates = (listParsed.competitors ?? []).slice(0, 3);
+        const saved: Array<{
+          id: string;
+          name: string;
+          url: string;
+          analysis: string | null;
+          error?: string;
+        }> = [];
+
+        for (let i = 0; i < candidates.length; i++) {
+          const c = candidates[i];
+          const name = (c.name ?? "").trim() || `Competitor ${i + 1}`;
+          const normalized = c.url ? safeNormalizeUrl(c.url) : null;
+          if (!normalized) {
+            saved.push({
+              id: "",
+              name,
+              url: c.url ?? "",
+              analysis: null,
+              error: "Invalid or missing URL",
+            });
+            continue;
+          }
+          try {
+            if (i > 0) await sleep(2000);
+            const { content, pageUrl } = await scrapeHomepagePlainText(normalized);
+            const deepRaw = await groqJsonObject(
+              COMPETITOR_DEEP_SYSTEM,
+              `Our brand: ${brandName}\nIndustry: ${industry}\nNiche: ${niche}\n\nCompetitor: ${name}\nTheir URL: ${pageUrl}\n\nHomepage text:\n${content.slice(0, 5000)}`,
+            );
+            const deep = parseCompetitorDeep(deepRaw);
+            if (!deep) {
+              saved.push({ id: "", name, url: pageUrl, analysis: null, error: "Analysis JSON invalid" });
+              continue;
+            }
+            const row = await prisma.competitor.upsert({
+              where: { storeId_url: { storeId, url: pageUrl } },
+              create: {
+                storeId,
+                name,
+                url: pageUrl,
+                industry,
+                niche,
+                analysis: deep.analysis ?? null,
+                strengths: stringifyList(deep.strengths),
+                weaknesses: stringifyList(deep.weaknesses),
+                whatTheyDoBetter: deep.whatTheyDoBetter ?? null,
+                messagingStrategy: deep.messagingStrategy ?? null,
+                pricingStrategy: deep.pricingStrategy ?? null,
+                emailStrategy: deep.emailStrategy ?? null,
+              },
+              update: {
+                name,
+                industry,
+                niche,
+                analysis: deep.analysis ?? null,
+                strengths: stringifyList(deep.strengths),
+                weaknesses: stringifyList(deep.weaknesses),
+                whatTheyDoBetter: deep.whatTheyDoBetter ?? null,
+                messagingStrategy: deep.messagingStrategy ?? null,
+                pricingStrategy: deep.pricingStrategy ?? null,
+                emailStrategy: deep.emailStrategy ?? null,
+              },
+            });
+            saved.push({
+              id: row.id,
+              name: row.name,
+              url: row.url,
+              analysis: row.analysis,
+            });
+          } catch (err) {
+            console.error("[tools/findCompetitors] competitor failed:", name, err);
+            saved.push({
+              id: "",
+              name,
+              url: normalized,
+              analysis: null,
+              error: err instanceof Error ? err.message : "Scrape or analysis failed",
+            });
+          }
+        }
+
+        return { ok: true as const, saved, attempted: candidates.length };
       } catch (e) {
+        console.error("[tools/findCompetitors]", e);
         return { error: e instanceof Error ? e.message : "Competitor search failed" };
       }
     },
   }),
 
   analyzeCompetitorSite: tool({
-    description: "Crawl a competitor website homepage and analyze positioning vs our brand.",
+    description:
+      "Crawl a competitor homepage with Firecrawl, analyze vs our brand with Groq, upsert Competitor.",
     inputSchema: z.object({
       url: z.string().min(1),
       competitorName: z.string().min(1),
     }),
     execute: async ({ url, competitorName }) => {
+      const storeId = DEFAULT_STORE_ID;
+      console.log("[tools/analyzeCompetitorSite]", { url, competitorName });
       try {
-        const profile = await ensureBrandProfileForStore(DEFAULT_STORE_ID);
+        const profile = await ensureBrandProfileForStore(storeId);
         const { content, pageUrl } = await scrapeHomepagePlainText(url);
-        const raw = await groqJsonObject(
-          `Return ONLY JSON: { "positioning": string, "messagingThemes": string[], "emailStrategySignals": string[], "pricingSignals": string, "strengthsVsOurBrand": string, "opportunitiesForUs": string[] }`,
-          `Competitor: ${competitorName}\nTheir site URL: ${pageUrl}\n\nOur brand: ${profile.brandName ?? "Unknown"} — ${profile.industry ?? ""} / ${profile.niche ?? ""}\nOur USP: ${profile.usp ?? "N/A"}\n\nHomepage text:\n${content.slice(0, 6000)}`,
+        const deepRaw = await groqJsonObject(
+          COMPETITOR_DEEP_SYSTEM,
+          `Our brand: ${profile.brandName ?? "Unknown"}\nIndustry: ${profile.industry ?? ""}\nNiche: ${profile.niche ?? ""}\nUSP: ${profile.usp ?? "N/A"}\n\nCompetitor: ${competitorName}\nTheir URL: ${pageUrl}\n\nHomepage text:\n${content.slice(0, 6000)}`,
         );
-        const json = extractJsonText(raw);
-        if (!json) return { error: "Failed to parse competitor site analysis" };
-        return JSON.parse(json) as Record<string, unknown>;
+        const deep = parseCompetitorDeep(deepRaw);
+        if (!deep) return { error: "Failed to parse competitor site analysis" };
+
+        const row = await prisma.competitor.upsert({
+          where: { storeId_url: { storeId, url: pageUrl } },
+          create: {
+            storeId,
+            name: competitorName,
+            url: pageUrl,
+            industry: profile.industry,
+            niche: profile.niche,
+            analysis: deep.analysis ?? null,
+            strengths: stringifyList(deep.strengths),
+            weaknesses: stringifyList(deep.weaknesses),
+            whatTheyDoBetter: deep.whatTheyDoBetter ?? null,
+            messagingStrategy: deep.messagingStrategy ?? null,
+            pricingStrategy: deep.pricingStrategy ?? null,
+            emailStrategy: deep.emailStrategy ?? null,
+          },
+          update: {
+            name: competitorName,
+            industry: profile.industry,
+            niche: profile.niche,
+            analysis: deep.analysis ?? null,
+            strengths: stringifyList(deep.strengths),
+            weaknesses: stringifyList(deep.weaknesses),
+            whatTheyDoBetter: deep.whatTheyDoBetter ?? null,
+            messagingStrategy: deep.messagingStrategy ?? null,
+            pricingStrategy: deep.pricingStrategy ?? null,
+            emailStrategy: deep.emailStrategy ?? null,
+          },
+        });
+
+        return {
+          ok: true as const,
+          competitorId: row.id,
+          url: row.url,
+          analysis: deep.analysis,
+          strengths: deep.strengths ?? [],
+          weaknesses: deep.weaknesses ?? [],
+          whatTheyDoBetter: deep.whatTheyDoBetter,
+          messagingStrategy: deep.messagingStrategy,
+          pricingStrategy: deep.pricingStrategy,
+          emailStrategy: deep.emailStrategy,
+        };
       } catch (e) {
+        console.error("[tools/analyzeCompetitorSite]", e);
         return { error: e instanceof Error ? e.message : "Competitor site analysis failed" };
       }
     },
   }),
 
   analyzeCompetitorEmail: tool({
-    description: "Analyze pasted competitor email copy for tactics and learnings.",
+    description:
+      "Analyze pasted competitor email copy with Groq and save a CompetitorEmail row.",
     inputSchema: z.object({
       emailContent: z.string().min(1),
       competitorName: z.string().optional(),
     }),
     execute: async ({ emailContent, competitorName }) => {
+      const storeId = DEFAULT_STORE_ID;
       try {
+        const truncated = emailContent.slice(0, 8000);
         const raw = await groqJsonObject(
-          `Return ONLY JSON: { "subjectLineStrategy": string, "tone": string, "offerType": string, "ctaApproach": string, "urgencyTactics": string[], "personalizationLevel": string, "takeaways": string[] }`,
-          `Analyze this competitor email${competitorName ? ` (from ${competitorName})` : ""}:\n\n${emailContent.slice(0, 8000)}`,
+          EMAIL_ANALYSIS_SYSTEM,
+          `Analyze this competitor email${competitorName ? ` (from ${competitorName})` : ""}:\n\n${truncated}`,
         );
         const json = extractJsonText(raw);
         if (!json) return { error: "Failed to parse email analysis" };
-        return JSON.parse(json) as Record<string, unknown>;
+        const parsed = JSON.parse(json) as {
+          subjectLine?: string;
+          emailType?: string;
+          analysis?: string;
+          subjectLineStrategy?: string;
+          tone?: string;
+          offerType?: string;
+          ctaApproach?: string;
+          urgencyTactics?: string[];
+          personalizationLevel?: string;
+          takeaways?: string[];
+        };
+
+        let competitorId: string | null = null;
+        if (competitorName?.trim()) {
+          const match = await prisma.competitor.findFirst({
+            where: { storeId, name: { equals: competitorName.trim(), mode: "insensitive" } },
+            select: { id: true },
+          });
+          competitorId = match?.id ?? null;
+        }
+
+        const analysisObj = {
+          subjectLineStrategy: parsed.subjectLineStrategy,
+          tone: parsed.tone,
+          offerType: parsed.offerType,
+          ctaApproach: parsed.ctaApproach,
+          urgencyTactics: parsed.urgencyTactics,
+          personalizationLevel: parsed.personalizationLevel,
+          takeaways: parsed.takeaways,
+        };
+
+        const row = await prisma.competitorEmail.create({
+          data: {
+            storeId,
+            competitorId,
+            competitorName: competitorName?.trim() ?? null,
+            emailContent: truncated,
+            subjectLine: parsed.subjectLine ?? null,
+            emailType: parsed.emailType ?? null,
+            analysis: parsed.analysis ?? JSON.stringify(analysisObj),
+          },
+        });
+
+        return {
+          ok: true as const,
+          id: row.id,
+          subjectLine: parsed.subjectLine,
+          emailType: parsed.emailType,
+          summary: parsed.analysis,
+          tactics: analysisObj,
+        };
       } catch (e) {
+        console.error("[tools/analyzeCompetitorEmail]", e);
         return { error: e instanceof Error ? e.message : "Email analysis failed" };
+      }
+    },
+  }),
+
+  getCompetitors: tool({
+    description: "List saved competitors (and short summaries) from the database for this store.",
+    inputSchema: z.object({
+      limit: z.number().min(1).max(30).optional(),
+    }),
+    execute: async ({ limit }) => {
+      const storeId = DEFAULT_STORE_ID;
+      const take = limit ?? 15;
+      try {
+        const rows = await prisma.competitor.findMany({
+          where: { storeId },
+          orderBy: { updatedAt: "desc" },
+          take,
+          select: {
+            id: true,
+            name: true,
+            url: true,
+            industry: true,
+            niche: true,
+            analysis: true,
+            strengths: true,
+            whatTheyDoBetter: true,
+            updatedAt: true,
+          },
+        });
+        return { count: rows.length, competitors: rows };
+      } catch (e) {
+        console.error("[tools/getCompetitors]", e);
+        return { error: e instanceof Error ? e.message : "Failed to load competitors" };
       }
     },
   }),
