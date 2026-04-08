@@ -13,7 +13,6 @@ import { useChat } from "@ai-sdk/react";
 import ReactMarkdown from "react-markdown";
 import { Brain, ChevronDown, Loader2, Paperclip, Plus, SendHorizontal, Sparkles, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 
 type DbMessage = {
   id: string;
@@ -322,11 +321,12 @@ function AgentChatPanel({
           >
             <Paperclip className="h-5 w-5" />
           </Button>
-          <Input
+          <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Message Worklin..."
-            className="flex-1 border-white/15 bg-zinc-900/80"
+            rows={1}
+            className="min-h-[40px] flex-1 resize-none rounded-md border border-white/15 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/30 disabled:opacity-50"
             disabled={busy}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
