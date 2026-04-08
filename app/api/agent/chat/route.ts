@@ -17,7 +17,8 @@ export const maxDuration = 60;
 function loadSoulDocument(): string {
   try {
     return readFileSync(join(process.cwd(), "lib/agent/SOUL.md"), "utf-8").trim();
-  } catch {
+  } catch (e) {
+    console.warn("[agent/chat] SOUL.md not loaded:", e instanceof Error ? e.message : e);
     return "";
   }
 }
@@ -74,6 +75,7 @@ function getTextFromUserMessage(msg: UIMessage): string {
 }
 
 export async function POST(req: Request) {
+  console.log("Agent chat POST received");
   try {
     const body = (await req.json()) as {
       messages?: UIMessage[];
@@ -82,6 +84,7 @@ export async function POST(req: Request) {
 
     const sessionId = body.sessionId;
     const messages = body.messages ?? [];
+    console.log("Request body:", JSON.stringify(messages));
 
     if (!sessionId || typeof sessionId !== "string") {
       return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
@@ -113,42 +116,56 @@ export async function POST(req: Request) {
       );
     }
 
-    const modelMessages = await convertToModelMessages(messages, {
-      tools: worklinTools,
-      ignoreIncompleteToolCalls: true,
-    });
+    console.log("SOUL loaded:", SOUL?.length ?? 0, "chars");
 
-    const result = streamText({
-      model: anthropic("claude-sonnet-4-20250514"),
-      system: SYSTEM,
-      messages: modelMessages,
-      tools: worklinTools,
-      stopWhen: stepCountIs(5),
-      onFinish: async ({ text }) => {
-        const trimmed = text?.trim();
-        if (trimmed) {
-          await prisma.chatMessage.create({
-            data: {
-              sessionId,
-              role: "assistant",
-              content: trimmed,
-            },
-          });
-          const nextTitle =
-            session.title && session.title !== "New Chat"
-              ? session.title
-              : userText
-                ? userText.slice(0, 80) + (userText.length > 80 ? "…" : "")
-                : "Worklin chat";
-          await prisma.chatSession.update({
-            where: { id: sessionId },
-            data: { title: nextTitle },
-          });
-        }
-      },
-    });
+    const model = anthropic("claude-sonnet-4-20250514");
+    console.log("Calling Anthropic with model:", "claude-sonnet-4-20250514");
 
-    return result.toUIMessageStreamResponse();
+    try {
+      const modelMessages = await convertToModelMessages(messages, {
+        tools: worklinTools,
+        ignoreIncompleteToolCalls: true,
+      });
+
+      const result = streamText({
+        model,
+        system: SYSTEM,
+        messages: modelMessages,
+        tools: worklinTools,
+        stopWhen: stepCountIs(5),
+        onFinish: async ({ text }) => {
+          const trimmed = text?.trim();
+          if (trimmed) {
+            await prisma.chatMessage.create({
+              data: {
+                sessionId,
+                role: "assistant",
+                content: trimmed,
+              },
+            });
+            const nextTitle =
+              session.title && session.title !== "New Chat"
+                ? session.title
+                : userText
+                  ? userText.slice(0, 80) + (userText.length > 80 ? "…" : "")
+                  : "Worklin chat";
+            await prisma.chatSession.update({
+              where: { id: sessionId },
+              data: { title: nextTitle },
+            });
+          }
+        },
+      });
+
+      return result.toUIMessageStreamResponse();
+    } catch (error) {
+      console.error("Agent chat error:", error);
+      const err = error instanceof Error ? error : new Error(String(error));
+      return new Response(JSON.stringify({ error: err.message, stack: err.stack }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
   } catch (error) {
     console.error("[agent/chat]", error);
     return NextResponse.json(

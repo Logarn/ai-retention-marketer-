@@ -120,6 +120,11 @@ function AgentChatPanel({
     id: session.id,
     transport,
     messages: initialMessages,
+    onError: (error) => {
+      console.error("Chat error:", error);
+      setToast(error.message ?? "Something went wrong. Check the console or try again.");
+      window.setTimeout(() => setToast(null), 8000);
+    },
   });
 
   useEffect(() => {
