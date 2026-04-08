@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   DefaultChatTransport,
   getToolName,
+  isReasoningUIPart,
   isTextUIPart,
   isToolUIPart,
   type UIMessage,
@@ -65,6 +66,22 @@ function messagesFromDb(rows: DbMessage[]): UIMessage[] {
   }));
 }
 
+/** Collect visible text from any message part (text, reasoning, tool output fallbacks). */
+function getRenderableTextParts(parts: UIMessage["parts"]): Array<{ key: string; text: string; kind: "text" | "reasoning" }> {
+  const out: Array<{ key: string; text: string; kind: "text" | "reasoning" }> = [];
+  let i = 0;
+  for (const part of parts) {
+    const p = part as { type?: string; text?: string };
+    if (isTextUIPart(part as never) && p.text) {
+      out.push({ key: `t-${i}`, text: p.text, kind: "text" });
+    } else if (isReasoningUIPart(part as never) && p.text) {
+      out.push({ key: `r-${i}`, text: p.text, kind: "reasoning" });
+    }
+    i += 1;
+  }
+  return out;
+}
+
 function toolLineFromPart(part: unknown): string | null {
   if (!isToolUIPart(part as never)) return null;
   const name = getToolName(part as never);
@@ -116,7 +133,7 @@ function AgentChatPanel({
 
   const initialMessages = useMemo(() => messagesFromDb(session.messages), [session]);
 
-  const { messages, sendMessage, status, stop } = useChat({
+  const { messages, sendMessage, status, stop, setMessages } = useChat({
     id: session.id,
     transport,
     messages: initialMessages,
@@ -125,7 +142,19 @@ function AgentChatPanel({
       setToast(error.message ?? "Something went wrong. Check the console or try again.");
       window.setTimeout(() => setToast(null), 8000);
     },
+    onFinish: async () => {
+      try {
+        const res = await fetch(`/api/agent/sessions/${session.id}`);
+        if (!res.ok) return;
+        const data = (await res.json()) as { session: ChatSession };
+        setMessages(messagesFromDb(data.session.messages));
+      } catch {
+        // ignore sync errors
+      }
+    },
   });
+
+  console.log("Messages:", messages);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -273,24 +302,55 @@ function AgentChatPanel({
                       Worklin
                     </div>
                   ) : null}
-                  {m.parts.map((part, i) => {
-                    if (isTextUIPart(part)) {
-                      return (
-                        <div key={i} className="prose prose-invert prose-sm max-w-none">
-                          <ReactMarkdown>{part.text}</ReactMarkdown>
-                        </div>
-                      );
+                  {(() => {
+                    const textBlocks = getRenderableTextParts(m.parts);
+                    if (m.role === "assistant" && textBlocks.length === 0) {
+                      const raw = m.parts
+                        .map((part) => {
+                          const any = part as { type?: string; text?: string; output?: unknown };
+                          if (typeof any.text === "string" && any.text) return any.text;
+                          return "";
+                        })
+                        .filter(Boolean)
+                        .join("\n");
+                      if (raw) {
+                        return (
+                          <div key="fallback" className="prose prose-invert prose-sm max-w-none whitespace-pre-wrap">
+                            {raw}
+                          </div>
+                        );
+                      }
                     }
-                    const toolLine = toolLineFromPart(part);
-                    if (toolLine) {
-                      return (
-                        <p key={i} className="mt-2 text-xs text-zinc-500">
-                          {toolLine}
-                        </p>
-                      );
-                    }
-                    return null;
-                  })}
+                    return (
+                      <>
+                        {textBlocks.map((block) => (
+                          <div
+                            key={block.key}
+                            className={
+                              block.kind === "reasoning"
+                                ? "mt-2 rounded-md border border-white/10 bg-white/[0.04] px-2 py-1.5 text-xs text-zinc-400 italic"
+                                : "prose prose-invert prose-sm max-w-none"
+                            }
+                          >
+                            {block.kind === "text" ? (
+                              <ReactMarkdown>{block.text}</ReactMarkdown>
+                            ) : (
+                              <span className="whitespace-pre-wrap">{block.text}</span>
+                            )}
+                          </div>
+                        ))}
+                        {m.parts.map((part, i) => {
+                          const toolLine = toolLineFromPart(part);
+                          if (!toolLine) return null;
+                          return (
+                            <p key={`tool-${i}`} className="mt-2 text-xs text-zinc-500">
+                              {toolLine}
+                            </p>
+                          );
+                        })}
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
             );
