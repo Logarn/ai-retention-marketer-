@@ -1,5 +1,6 @@
 import {
   convertToModelMessages,
+  NoSuchToolError,
   stepCountIs,
   streamText,
 } from "ai";
@@ -12,9 +13,42 @@ import { DEFAULT_STORE_ID } from "@/app/api/brain/profile/store";
 import { worklinTools } from "@/lib/agent/tools";
 import { OPERATIONAL_INSTRUCTIONS } from "@/lib/agent/operational-instructions";
 import { buildAgentSystemPrompt, extractEssentialSoulSections } from "@/lib/agent/soul-compact";
-import type { UIMessage } from "ai";
+import type { ToolSet, UIMessage } from "ai";
 
 const GROQ_MODEL_ID = "llama-3.3-70b-versatile" as const;
+
+/** Groq/Llama sometimes emits tool names with a trailing slash; normalize for lookups and repair. */
+function sanitizeToolName(name: string): string {
+  return name.replace(/\/+$/, "").trim();
+}
+
+/**
+ * Register each tool twice so provider requests include both `name` and `name/` (Groq quirk).
+ */
+function withTrailingSlashToolAliases<T extends ToolSet>(tools: T): T {
+  const out = { ...tools } as Record<string, unknown>;
+  for (const key of Object.keys(tools)) {
+    const slash = `${key}/`;
+    if (!(slash in out)) {
+      out[slash] = tools[key as keyof T];
+    }
+  }
+  return out as T;
+}
+
+const worklinToolsForRequest = withTrailingSlashToolAliases(worklinTools);
+
+function friendlyStreamError(error: unknown): string {
+  if (NoSuchToolError.isInstance(error)) {
+    const fixed = sanitizeToolName(error.toolName);
+    return `I hit a snag calling a tool (${fixed}). Retrying usually fixes it—send your message again.`;
+  }
+  const msg = error instanceof Error ? error.message : String(error);
+  if (/not in request\.tools|No such tool/i.test(msg)) {
+    return "I hit a snag with a tool name. Please send your message again.";
+  }
+  return "Something went wrong while replying. Please try again in a moment.";
+}
 
 export const maxDuration = 60;
 
@@ -105,9 +139,11 @@ export async function POST(req: Request) {
       GROQ_MODEL_ID,
     );
 
+    console.log("Registered tools:", Object.keys(worklinToolsForRequest));
+
     try {
       const modelMessages = await convertToModelMessages(messages, {
-        tools: worklinTools,
+        tools: worklinToolsForRequest,
         ignoreIncompleteToolCalls: true,
       });
       console.log("[agent/chat] modelMessages count after convertToModelMessages:", modelMessages.length);
@@ -122,7 +158,29 @@ export async function POST(req: Request) {
         model,
         system: SYSTEM,
         messages: modelMessages,
-        tools: worklinTools,
+        tools: worklinToolsForRequest,
+        experimental_repairToolCall: async ({ toolCall, tools, error }) => {
+          if (!NoSuchToolError.isInstance(error)) {
+            return null;
+          }
+          const cleaned = sanitizeToolName(toolCall.toolName);
+          if (cleaned === toolCall.toolName) {
+            return null;
+          }
+          if (cleaned in tools) {
+            console.warn(
+              "[agent/chat] repaired tool name:",
+              JSON.stringify(toolCall.toolName),
+              "->",
+              cleaned,
+            );
+            return { ...toolCall, toolName: cleaned };
+          }
+          return null;
+        },
+        onError: ({ error }) => {
+          console.error("[agent/chat] stream error:", error);
+        },
         stopWhen: stepCountIs(5),
         onFinish: async ({ text }) => {
           const trimmed = text?.trim();
@@ -148,19 +206,20 @@ export async function POST(req: Request) {
         },
       });
 
-      return result.toUIMessageStreamResponse();
+      return result.toUIMessageStreamResponse({
+        onError: (error) => friendlyStreamError(error),
+      });
     } catch (error) {
       console.error("Agent chat error:", error);
-      const err = error instanceof Error ? error : new Error(String(error));
-      return new Response(JSON.stringify({ error: err.message, stack: err.stack }), {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      });
+      return NextResponse.json(
+        { error: friendlyStreamError(error) },
+        { status: 500 },
+      );
     }
   } catch (error) {
     console.error("[agent/chat]", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Chat failed" },
+      { error: friendlyStreamError(error) },
       { status: 500 },
     );
   }
