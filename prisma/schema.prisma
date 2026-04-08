@@ -59,14 +59,18 @@ model OrderItem {
 
 model Product {
   id                   String      @id @default(cuid())
+  /// Shopify product id (REST resource id) as string — canonical sync key
   externalId           String?     @unique
   name                 String
-  sku                  String      @unique
+  /// Display/inventory SKU; not unique (Shopify allows duplicates / blanks)
+  sku                  String?
   price                Float
   category             String?
   imageUrl             String?
   avgReplenishmentDays Int?
   orderItems           OrderItem[]
+
+  @@index([sku])
 }
 
 model CustomerEvent {

@@ -257,12 +257,10 @@ async function recomputeCustomerAggregates(customerIds: string[]) {
 async function upsertProduct(sp: ShopifyProductPayload) {
   const externalId = sp.id ? String(sp.id) : null;
   const sku =
-    sp.variants?.find((variant) => variant.sku && variant.sku.trim())?.sku?.trim() ??
-    (externalId ? `SHOPIFY-${externalId}` : `SHOPIFY-PRODUCT-${crypto.randomUUID()}`);
+    sp.variants?.find((variant) => variant.sku && variant.sku.trim())?.sku?.trim() ?? null;
 
   const price = parseMoney(sp.variants?.[0]?.price ?? "0");
   const data = {
-    externalId,
     sku,
     name: sp.title?.trim() || "Untitled Shopify Product",
     category: sp.product_type || null,
@@ -274,14 +272,16 @@ async function upsertProduct(sp: ShopifyProductPayload) {
     return prisma.product.upsert({
       where: { externalId },
       update: data,
-      create: data,
+      create: { ...data, externalId },
     });
   }
 
-  return prisma.product.upsert({
-    where: { sku },
-    update: data,
-    create: data,
+  // Rare: Shopify payloads without product id — avoid SKU as a unique key (duplicates / blanks).
+  return prisma.product.create({
+    data: {
+      ...data,
+      externalId: null,
+    },
   });
 }
 
@@ -408,24 +408,29 @@ async function upsertOrder(
     const productExternalId = line.product_id ? String(line.product_id) : null;
     let productId = productExternalId ? productByExternalId.get(productExternalId) : null;
     if (!productId) {
+      const lineSku = line.sku?.trim() ?? null;
+      const stableExternalId =
+        productExternalId ??
+        (line.id != null
+          ? `shopify-lineitem-${line.id}`
+          : `shopify-line-fallback-${crypto.randomUUID()}`);
       const fallbackProduct = await prisma.product.upsert({
-        where: {
-          sku: line.sku?.trim() || `SHOPIFY-LINE-${line.id ?? crypto.randomUUID()}`,
-        },
+        where: { externalId: stableExternalId },
         update: {
-          externalId: productExternalId,
+          sku: lineSku,
           name: line.title || "Shopify Line Item",
           price: parseMoney(line.price),
         },
         create: {
-          externalId: productExternalId,
-          sku: line.sku?.trim() || `SHOPIFY-LINE-${line.id ?? crypto.randomUUID()}`,
+          externalId: stableExternalId,
+          sku: lineSku,
           name: line.title || "Shopify Line Item",
           price: parseMoney(line.price),
         },
       });
       productId = fallbackProduct.id;
       if (productExternalId) productByExternalId.set(productExternalId, productId);
+      productByExternalId.set(stableExternalId, productId);
     }
 
     await prisma.orderItem.create({
