@@ -17,7 +17,8 @@ export function extractEssentialSoulSections(fullMarkdown: string): string {
   return blocks.join("\n\n---\n\n");
 }
 
-const MAX_SYSTEM_CHARS = 4000;
+/** Groq context budget — keep system prompt reasonable; operational block can be long. */
+const MAX_SYSTEM_CHARS = 12000;
 
 export function buildAgentSystemPrompt(soulEssential: string, operationalInstructions: string): string {
   const op = operationalInstructions.trim();

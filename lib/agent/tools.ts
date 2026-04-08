@@ -56,32 +56,102 @@ async function groqJsonObject(system: string, user: string) {
   return res.choices[0]?.message?.content?.trim() ?? "";
 }
 
+/** Scalar BrandProfile fields only — avoids huge nested JSON / relation payloads in tool results. */
+const brandProfileSelect = {
+  id: true,
+  storeId: true,
+  brandName: true,
+  tagline: true,
+  industry: true,
+  niche: true,
+  brandStory: true,
+  usp: true,
+  missionStatement: true,
+  websiteUrl: true,
+  shopifyUrl: true,
+  targetDemographics: true,
+  targetPsychographics: true,
+  audiencePainPoints: true,
+  audienceDesires: true,
+  voiceFormalCasual: true,
+  voiceSeriousPlayful: true,
+  voiceReservedEnthusiastic: true,
+  voiceTechnicalSimple: true,
+  voiceAuthoritativeApproachable: true,
+  voiceMinimalDescriptive: true,
+  voiceLuxuryAccessible: true,
+  voiceEdgySafe: true,
+  voiceEmotionalRational: true,
+  voiceTrendyTimeless: true,
+  voiceDescription: true,
+  greetingStyle: true,
+  signOffStyle: true,
+  emojiUsage: true,
+  preferredLength: true,
+  discountPhilosophy: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
 export const worklinTools = {
   getBrandProfile: tool({
     description:
       "Get the current brand profile including voice, tone, rules, CTAs, phrases, custom voice dimensions, and audience info.",
     inputSchema: z.object({}),
     execute: async () => {
+      const storeId = DEFAULT_STORE_ID;
+      console.log("[tools/getBrandProfile] start storeId=", storeId);
       try {
-        const [profile, rules, ctas, phrases, customVoiceDimensions] = await Promise.all([
-          ensureBrandProfileForStore(DEFAULT_STORE_ID),
+        let profile = await prisma.brandProfile.findUnique({
+          where: { storeId },
+          select: brandProfileSelect,
+        });
+
+        if (!profile) {
+          console.warn("[tools/getBrandProfile] no row — creating via ensureBrandProfileForStore");
+          await ensureBrandProfileForStore(storeId);
+          profile = await prisma.brandProfile.findUnique({
+            where: { storeId },
+            select: brandProfileSelect,
+          });
+        }
+
+        if (!profile) {
+          throw new Error("BrandProfile could not be loaded or created for store default");
+        }
+
+        const [rules, ctas, phrases, customVoiceDimensions] = await Promise.all([
           prisma.brandRule.findMany({
-            where: { storeId: DEFAULT_STORE_ID },
+            where: { storeId },
             orderBy: [{ priority: "asc" }, { createdAt: "desc" }],
+            take: 80,
           }),
           prisma.brandCTA.findMany({
-            where: { storeId: DEFAULT_STORE_ID },
+            where: { storeId },
             orderBy: { createdAt: "desc" },
+            take: 40,
           }),
           prisma.brandPhrase.findMany({
-            where: { storeId: DEFAULT_STORE_ID },
+            where: { storeId },
             orderBy: { createdAt: "desc" },
+            take: 80,
           }),
           prisma.customVoiceDimension.findMany({
-            where: { storeId: DEFAULT_STORE_ID },
+            where: { storeId },
             orderBy: { createdAt: "asc" },
+            take: 20,
           }),
         ]);
+
+        console.log(
+          "[tools/getBrandProfile] ok profileId=",
+          profile.id,
+          "rules",
+          rules.length,
+          "ctas",
+          ctas.length,
+        );
+
         return {
           profile,
           rules,
@@ -90,7 +160,11 @@ export const worklinTools = {
           customVoiceDimensions,
         };
       } catch (e) {
-        return { error: e instanceof Error ? e.message : "Failed to load brand profile" };
+        console.error("[tools/getBrandProfile] error:", e);
+        return {
+          error: e instanceof Error ? e.message : "Failed to load brand profile",
+          storeId,
+        };
       }
     },
   }),
