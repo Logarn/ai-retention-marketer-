@@ -77,14 +77,23 @@ function getTextFromUserMessage(msg: UIMessage): string {
 export async function POST(req: Request) {
   console.log("Agent chat POST received");
   try {
-    const body = (await req.json()) as {
+    const raw = (await req.json()) as Record<string, unknown>;
+    console.log("[agent/chat] incoming keys:", Object.keys(raw), "messages len:", Array.isArray(raw.messages) ? raw.messages.length : "missing");
+
+    const body = raw as {
       messages?: UIMessage[];
       sessionId?: string;
     };
 
     const sessionId = body.sessionId;
     const messages = body.messages ?? [];
-    console.log("Request body:", JSON.stringify(messages));
+    console.log("Request body (messages JSON length):", JSON.stringify(messages).length);
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return NextResponse.json(
+        { error: "Invalid prompt: messages must not be empty. Ensure the client sends the full UI messages array." },
+        { status: 400 },
+      );
+    }
 
     if (!sessionId || typeof sessionId !== "string") {
       return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
@@ -126,6 +135,13 @@ export async function POST(req: Request) {
         tools: worklinTools,
         ignoreIncompleteToolCalls: true,
       });
+      console.log("[agent/chat] modelMessages count after convertToModelMessages:", modelMessages.length);
+      if (modelMessages.length === 0) {
+        return NextResponse.json(
+          { error: "No model messages after conversion — check UI message parts and roles." },
+          { status: 400 },
+        );
+      }
 
       const result = streamText({
         model,

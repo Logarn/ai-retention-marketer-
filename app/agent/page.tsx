@@ -121,9 +121,15 @@ function AgentChatPanel({
     () =>
       new DefaultChatTransport({
         api: "/api/agent/chat",
-        prepareSendMessagesRequest: async ({ body }) => ({
+        // Must merge `messages` (and id/trigger/messageId) into the body — returning only
+        // sessionId replaces the default payload and the API receives an empty messages array.
+        prepareSendMessagesRequest: async ({ body, messages: uiMessages, id, trigger, messageId }) => ({
           body: {
             ...(body ?? {}),
+            id,
+            messages: uiMessages,
+            trigger,
+            messageId,
             sessionId: session.id,
           },
         }),
