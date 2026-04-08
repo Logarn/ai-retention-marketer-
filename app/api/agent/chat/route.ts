@@ -5,12 +5,15 @@ import {
 } from "ai";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { anthropic } from "@ai-sdk/anthropic";
+import { createGroq } from "@ai-sdk/groq";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { DEFAULT_STORE_ID } from "@/app/api/brain/profile/store";
 import { worklinTools } from "@/lib/agent/tools";
+import { buildAgentSystemPrompt, extractEssentialSoulSections } from "@/lib/agent/soul-compact";
 import type { UIMessage } from "ai";
+
+const GROQ_MODEL_ID = "llama-3.3-70b-versatile" as const;
 
 export const maxDuration = 60;
 
@@ -23,7 +26,8 @@ function loadSoulDocument(): string {
   }
 }
 
-const SOUL = loadSoulDocument();
+const SOUL_FULL = loadSoulDocument();
+const SOUL_ESSENTIAL = SOUL_FULL ? extractEssentialSoulSections(SOUL_FULL) : "";
 
 const OPERATIONAL_SYSTEM = `You are Worklin, an autonomous AI retention marketing agent. You help DTC Shopify brands with retention marketing — email campaigns, customer analysis, brand voice, competitor intelligence.
 
@@ -61,9 +65,7 @@ RULES:
 - Keep responses concise — no walls of text unless the user asks for detail
 - Long-running tools (like analyzeStore) can take 15–30s — tell the user you're on it before/during if appropriate`;
 
-const SYSTEM = SOUL
-  ? `${SOUL}\n\n---\n\n## Operational instructions (follow these in every turn)\n\n${OPERATIONAL_SYSTEM}`
-  : OPERATIONAL_SYSTEM;
+const SYSTEM = buildAgentSystemPrompt(SOUL_ESSENTIAL, OPERATIONAL_SYSTEM);
 
 function getTextFromUserMessage(msg: UIMessage): string {
   if (msg.role !== "user") return "";
@@ -118,17 +120,25 @@ export async function POST(req: Request) {
       });
     }
 
-    if (!process.env.ANTHROPIC_API_KEY) {
+    if (!process.env.GROQ_API_KEY) {
       return NextResponse.json(
-        { error: "ANTHROPIC_API_KEY is not configured on the server." },
+        { error: "GROQ_API_KEY is not configured on the server." },
         { status: 500 },
       );
     }
 
-    console.log("SOUL loaded:", SOUL?.length ?? 0, "chars");
-
-    const model = anthropic("claude-sonnet-4-20250514");
-    console.log("Calling Anthropic with model:", "claude-sonnet-4-20250514");
+    const groq = createGroq({ apiKey: process.env.GROQ_API_KEY });
+    const model = groq(GROQ_MODEL_ID);
+    console.log(
+      "[agent/chat] SOUL full:",
+      SOUL_FULL.length,
+      "chars, essential:",
+      SOUL_ESSENTIAL.length,
+      "chars, system:",
+      SYSTEM.length,
+      "chars — Groq model:",
+      GROQ_MODEL_ID,
+    );
 
     try {
       const modelMessages = await convertToModelMessages(messages, {

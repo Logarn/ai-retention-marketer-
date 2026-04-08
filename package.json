@@ -15,7 +15,6 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.68",
     "@ai-sdk/groq": "^3.0.35",
     "@ai-sdk/react": "^3.0.155",
     "@faker-js/faker": "^10.4.0",
