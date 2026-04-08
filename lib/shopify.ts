@@ -2,7 +2,8 @@ import crypto from "crypto";
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-const SHOPIFY_API_VERSION = "2024-01";
+/** Shopify Admin REST API version (keep in sync with test-shopify route). */
+export const SHOPIFY_API_VERSION = "2025-01";
 export const SHOPIFY_CALLBACK_PATH = "/api/auth/shopify/callback";
 
 export type ShopifySyncMode = "full" | "incremental";
@@ -112,6 +113,16 @@ async function fetchShopifyPage<T>(
   token: string,
   collectionKey: string,
 ): Promise<{ items: T[]; nextUrl: string | null }> {
+  const tokenPrefix = token.length >= 8 ? token.substring(0, 8) : token;
+  console.log(
+    "[shopify] HTTP GET",
+    url,
+    "| X-Shopify-Access-Token prefix:",
+    tokenPrefix,
+    "| API version:",
+    SHOPIFY_API_VERSION,
+  );
+
   const response = await fetch(url, {
     headers: {
       "X-Shopify-Access-Token": token,
@@ -120,6 +131,15 @@ async function fetchShopifyPage<T>(
 
   if (!response.ok) {
     const body = (await response.text()).slice(0, 500);
+    console.error(
+      "[shopify] request failed:",
+      collectionKey,
+      response.status,
+      "| url:",
+      url,
+      "| body snippet:",
+      body.slice(0, 200),
+    );
     throw new ShopifyApiError(`Shopify ${collectionKey} fetch failed (${response.status})`, response.status, body);
   }
 
@@ -144,6 +164,15 @@ async function fetchShopifyCollection<T>(
   for (const [key, value] of Object.entries(opts?.extraParams ?? {})) {
     baseUrl.searchParams.set(key, value);
   }
+
+  console.log(
+    "[shopify] fetchShopifyCollection start:",
+    resource,
+    "| first URL:",
+    baseUrl.toString(),
+    "| store:",
+    getStoreDomain(),
+  );
 
   const all: T[] = [];
   let pageUrl: string | null = baseUrl.toString();
@@ -463,6 +492,19 @@ export async function syncShopifyData(input: {
     customersSinceAt: Date | null;
   };
 }) {
+  const tokenPrefix =
+    input.token.length >= 8 ? input.token.substring(0, 8) : input.token;
+  console.log(
+    "[shopify] syncShopifyData start | mode:",
+    input.mode,
+    "| token prefix:",
+    tokenPrefix,
+    "| store:",
+    getStoreDomain(),
+    "| API:",
+    SHOPIFY_API_VERSION,
+  );
+
   const warnings: string[] = [];
   const [orders, products] = await Promise.all([
     fetchShopifyCollection<ShopifyOrderPayload>("orders", input.token, {
@@ -667,18 +709,38 @@ export async function exchangeShopifyCodeForToken(code: string) {
   return payload.access_token;
 }
 
-export async function getShopifyTokenFromState() {
+export type ShopifyTokenSource = "database" | "SHOPIFY_ACCESS_TOKEN" | "SHOPIFY_ADMIN_ACCESS_TOKEN";
+
+export async function getShopifyTokenFromState(): Promise<{
+  state: Awaited<ReturnType<typeof prisma.integrationState.findUnique>>;
+  token: string | null;
+  tokenSource: ShopifyTokenSource | null;
+}> {
   const state = await prisma.integrationState.findUnique({
     where: { provider: "shopify" },
   });
-  return {
-    state,
-    token:
-      state?.accessToken ||
-      process.env.SHOPIFY_ACCESS_TOKEN ||
-      process.env.SHOPIFY_ADMIN_ACCESS_TOKEN ||
-      null,
-  };
+
+  if (state?.accessToken) {
+    const token = state.accessToken;
+    const prefix = token.length >= 8 ? token.substring(0, 8) : token;
+    console.log("[shopify] using token from IntegrationState (database) | prefix:", prefix);
+    return { state, token, tokenSource: "database" };
+  }
+  if (process.env.SHOPIFY_ACCESS_TOKEN) {
+    const token = process.env.SHOPIFY_ACCESS_TOKEN;
+    const prefix = token.length >= 8 ? token.substring(0, 8) : token;
+    console.log("[shopify] using SHOPIFY_ACCESS_TOKEN from env | prefix:", prefix);
+    return { state, token, tokenSource: "SHOPIFY_ACCESS_TOKEN" };
+  }
+  if (process.env.SHOPIFY_ADMIN_ACCESS_TOKEN) {
+    const token = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN;
+    const prefix = token.length >= 8 ? token.substring(0, 8) : token;
+    console.log("[shopify] using SHOPIFY_ADMIN_ACCESS_TOKEN from env | prefix:", prefix);
+    return { state, token, tokenSource: "SHOPIFY_ADMIN_ACCESS_TOKEN" };
+  }
+
+  console.warn("[shopify] no token: IntegrationState.accessToken and env vars are empty");
+  return { state, token: null, tokenSource: null };
 }
 
 export function getSyncCursorFromState(
@@ -726,6 +788,7 @@ export function sanitizeShopifyErrorMessage(message: string) {
 
 export function toSyncDebugPayload() {
   return {
+    apiVersion: SHOPIFY_API_VERSION,
     hasStore: Boolean(process.env.SHOPIFY_STORE_NAME),
     hasClientId: Boolean(process.env.SHOPIFY_CLIENT_ID),
     hasClientSecret: Boolean(process.env.SHOPIFY_CLIENT_SECRET),

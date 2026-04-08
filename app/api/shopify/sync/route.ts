@@ -236,6 +236,7 @@ export async function POST(request: NextRequest) {
     }
 
     const tokenResult = await getShopifyTokenFromState();
+    console.log("[shopify-sync] token source:", tokenResult.tokenSource ?? "none");
     if (!tokenResult.token) {
       const detail =
         "Shopify Admin token is missing. Connect Shopify (OAuth) or configure SHOPIFY_ACCESS_TOKEN.";
