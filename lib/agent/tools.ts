@@ -163,72 +163,95 @@ export const worklinTools = {
     inputSchema: z.object({}),
     execute: async () => {
       const storeId = DEFAULT_STORE_ID;
-      console.log("[tools/getBrandProfile] start storeId=", storeId);
-      try {
-        let profile = await prisma.brandProfile.findUnique({
-          where: { storeId },
-          select: brandProfileSelect,
-        });
+      const maxAttempts = 3;
+      const delayMs = 1000;
+      let lastError: unknown;
 
-        if (!profile) {
-          console.warn("[tools/getBrandProfile] no row — creating via ensureBrandProfileForStore");
-          await ensureBrandProfileForStore(storeId);
-          profile = await prisma.brandProfile.findUnique({
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        console.log(`[tools/getBrandProfile] attempt ${attempt}/${maxAttempts} storeId=${storeId}`);
+        try {
+          let profile = await prisma.brandProfile.findUnique({
             where: { storeId },
             select: brandProfileSelect,
           });
+
+          if (!profile) {
+            console.warn("[tools/getBrandProfile] no row — creating via ensureBrandProfileForStore");
+            await ensureBrandProfileForStore(storeId);
+            profile = await prisma.brandProfile.findUnique({
+              where: { storeId },
+              select: brandProfileSelect,
+            });
+          }
+
+          if (!profile) {
+            throw new Error("BrandProfile could not be loaded or created for store default");
+          }
+
+          const [rules, ctas, phrases, customVoiceDimensions] = await Promise.all([
+            prisma.brandRule.findMany({
+              where: { storeId },
+              orderBy: [{ priority: "asc" }, { createdAt: "desc" }],
+              take: 80,
+            }),
+            prisma.brandCTA.findMany({
+              where: { storeId },
+              orderBy: { createdAt: "desc" },
+              take: 40,
+            }),
+            prisma.brandPhrase.findMany({
+              where: { storeId },
+              orderBy: { createdAt: "desc" },
+              take: 80,
+            }),
+            prisma.customVoiceDimension.findMany({
+              where: { storeId },
+              orderBy: { createdAt: "asc" },
+              take: 20,
+            }),
+          ]);
+
+          console.log(
+            "[tools/getBrandProfile] ok attempt",
+            attempt,
+            "profileId=",
+            profile.id,
+            "rules",
+            rules.length,
+            "ctas",
+            ctas.length,
+          );
+
+          return {
+            profile,
+            rules,
+            ctas,
+            phrases,
+            customVoiceDimensions,
+          };
+        } catch (e) {
+          lastError = e;
+          const err = e instanceof Error ? e : new Error(String(e));
+          console.error(
+            `[tools/getBrandProfile] attempt ${attempt}/${maxAttempts} failed:`,
+            err.name,
+            err.message,
+            err.stack,
+          );
+          if (attempt < maxAttempts) {
+            console.warn(`[tools/getBrandProfile] retrying in ${delayMs}ms (possible cold DB or transient error)`);
+            await sleep(delayMs);
+          }
         }
-
-        if (!profile) {
-          throw new Error("BrandProfile could not be loaded or created for store default");
-        }
-
-        const [rules, ctas, phrases, customVoiceDimensions] = await Promise.all([
-          prisma.brandRule.findMany({
-            where: { storeId },
-            orderBy: [{ priority: "asc" }, { createdAt: "desc" }],
-            take: 80,
-          }),
-          prisma.brandCTA.findMany({
-            where: { storeId },
-            orderBy: { createdAt: "desc" },
-            take: 40,
-          }),
-          prisma.brandPhrase.findMany({
-            where: { storeId },
-            orderBy: { createdAt: "desc" },
-            take: 80,
-          }),
-          prisma.customVoiceDimension.findMany({
-            where: { storeId },
-            orderBy: { createdAt: "asc" },
-            take: 20,
-          }),
-        ]);
-
-        console.log(
-          "[tools/getBrandProfile] ok profileId=",
-          profile.id,
-          "rules",
-          rules.length,
-          "ctas",
-          ctas.length,
-        );
-
-        return {
-          profile,
-          rules,
-          ctas,
-          phrases,
-          customVoiceDimensions,
-        };
-      } catch (e) {
-        console.error("[tools/getBrandProfile] error:", e);
-        return {
-          error: e instanceof Error ? e.message : "Failed to load brand profile",
-          storeId,
-        };
       }
+
+      const finalMsg =
+        lastError instanceof Error ? lastError.message : "Failed to load brand profile after retries";
+      console.error("[tools/getBrandProfile] all attempts exhausted:", finalMsg, lastError);
+      return {
+        error: finalMsg,
+        storeId,
+      };
     },
   }),
 
