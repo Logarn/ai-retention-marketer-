@@ -3,6 +3,8 @@ import {
   stepCountIs,
   streamText,
 } from "ai";
+import { readFileSync } from "fs";
+import { join } from "path";
 import { anthropic } from "@ai-sdk/anthropic";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
@@ -12,7 +14,17 @@ import type { UIMessage } from "ai";
 
 export const maxDuration = 60;
 
-const SYSTEM = `You are Worklin, an autonomous AI retention marketing agent. You help DTC Shopify brands with retention marketing — email campaigns, customer analysis, brand voice, competitor intelligence.
+function loadSoulDocument(): string {
+  try {
+    return readFileSync(join(process.cwd(), "lib/agent/SOUL.md"), "utf-8").trim();
+  } catch {
+    return "";
+  }
+}
+
+const SOUL = loadSoulDocument();
+
+const OPERATIONAL_SYSTEM = `You are Worklin, an autonomous AI retention marketing agent. You help DTC Shopify brands with retention marketing — email campaigns, customer analysis, brand voice, competitor intelligence.
 
 PERSONALITY:
 - You're funny, direct, and talk like a smart friend who happens to be a marketing genius
@@ -47,6 +59,10 @@ RULES:
 - When generating emails, ALWAYS call generateEmailContent — don't write full marketing emails yourself without using that tool
 - Keep responses concise — no walls of text unless the user asks for detail
 - Long-running tools (like analyzeStore) can take 15–30s — tell the user you're on it before/during if appropriate`;
+
+const SYSTEM = SOUL
+  ? `${SOUL}\n\n---\n\n## Operational instructions (follow these in every turn)\n\n${OPERATIONAL_SYSTEM}`
+  : OPERATIONAL_SYSTEM;
 
 function getTextFromUserMessage(msg: UIMessage): string {
   if (msg.role !== "user") return "";
