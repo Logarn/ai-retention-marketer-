@@ -4,15 +4,8 @@ import { DEFAULT_STORE_ID } from "../../brain/profile/store";
 
 export const maxDuration = 10;
 
-const FIRST_MESSAGE = {
-  role: "agent" as const,
-  content:
-    "Hey there! 👋 I'm Worklin — your AI retention marketer. Think of me as that brilliant marketing friend who works 24/7 and never asks for equity.\n\nI learn your brand, study your competitors, plan campaigns, and write emails that actually convert — so you can focus on, you know, running your business.\n\nLet's get you set up. Takes about 5 minutes, and I promise to make it painless.",
-  messageType: "chips" as const,
-  metadata: JSON.stringify({
-    chips: ["Let's do this! 🚀", "Tell me more first", "I'm skeptical but curious"],
-  }),
-};
+const GREETING =
+  "Hey! 👋 I'm Worklin — your AI retention marketer. Think of me as that brilliant marketing friend who works 24/7 and never asks for equity. What are we working on?";
 
 export async function GET(request: Request) {
   try {
@@ -35,7 +28,6 @@ export async function GET(request: Request) {
         id: true,
         title: true,
         status: true,
-        currentStep: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -55,18 +47,15 @@ export async function POST() {
       data: {
         storeId: DEFAULT_STORE_ID,
         title: "New Chat",
-        status: "onboarding",
-        currentStep: 0,
+        status: "active",
       },
     });
 
     await prisma.chatMessage.create({
       data: {
         sessionId: session.id,
-        role: FIRST_MESSAGE.role,
-        content: FIRST_MESSAGE.content,
-        messageType: FIRST_MESSAGE.messageType,
-        metadata: FIRST_MESSAGE.metadata,
+        role: "assistant",
+        content: GREETING,
       },
     });
 
@@ -75,7 +64,7 @@ export async function POST() {
       include: { messages: { orderBy: { createdAt: "asc" } } },
     });
 
-    return NextResponse.json({ session: full }, { status: 201 });
+    return NextResponse.json({ session: full, sessionId: full.id }, { status: 201 });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to create session" },
