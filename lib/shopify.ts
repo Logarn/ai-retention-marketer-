@@ -725,26 +725,28 @@ export async function getShopifyTokenFromState(): Promise<{
     where: { provider: "shopify" },
   });
 
-  if (state?.accessToken) {
-    const token = state.accessToken;
-    const prefix = token.length >= 8 ? token.substring(0, 8) : token;
-    console.log("[shopify] using token from IntegrationState (database) | prefix:", prefix);
-    return { state, token, tokenSource: "database" };
-  }
-  if (process.env.SHOPIFY_ACCESS_TOKEN) {
-    const token = process.env.SHOPIFY_ACCESS_TOKEN;
-    const prefix = token.length >= 8 ? token.substring(0, 8) : token;
-    console.log("[shopify] using SHOPIFY_ACCESS_TOKEN from env | prefix:", prefix);
-    return { state, token, tokenSource: "SHOPIFY_ACCESS_TOKEN" };
-  }
-  if (process.env.SHOPIFY_ADMIN_ACCESS_TOKEN) {
-    const token = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN;
-    const prefix = token.length >= 8 ? token.substring(0, 8) : token;
-    console.log("[shopify] using SHOPIFY_ADMIN_ACCESS_TOKEN from env | prefix:", prefix);
-    return { state, token, tokenSource: "SHOPIFY_ADMIN_ACCESS_TOKEN" };
+  const envAccess = process.env.SHOPIFY_ACCESS_TOKEN?.trim();
+  if (envAccess) {
+    const prefix = envAccess.length >= 8 ? envAccess.substring(0, 8) : envAccess;
+    console.log("[shopify] token source: SHOPIFY_ACCESS_TOKEN (env, first) | prefix:", prefix);
+    return { state, token: envAccess, tokenSource: "SHOPIFY_ACCESS_TOKEN" };
   }
 
-  console.warn("[shopify] no token: IntegrationState.accessToken and env vars are empty");
+  const envAdmin = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN?.trim();
+  if (envAdmin) {
+    const prefix = envAdmin.length >= 8 ? envAdmin.substring(0, 8) : envAdmin;
+    console.log("[shopify] token source: SHOPIFY_ADMIN_ACCESS_TOKEN (env, second) | prefix:", prefix);
+    return { state, token: envAdmin, tokenSource: "SHOPIFY_ADMIN_ACCESS_TOKEN" };
+  }
+
+  if (state?.accessToken?.trim()) {
+    const token = state.accessToken.trim();
+    const prefix = token.length >= 8 ? token.substring(0, 8) : token;
+    console.log("[shopify] token source: IntegrationState.accessToken (database, fallback) | prefix:", prefix);
+    return { state, token, tokenSource: "database" };
+  }
+
+  console.warn("[shopify] no token: set SHOPIFY_ACCESS_TOKEN / SHOPIFY_ADMIN_ACCESS_TOKEN or IntegrationState.accessToken");
   return { state, token: null, tokenSource: null };
 }
 
