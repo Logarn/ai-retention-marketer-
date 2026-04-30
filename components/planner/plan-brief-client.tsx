@@ -1,13 +1,19 @@
 "use client";
 
 import useSWR from "swr";
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
   CalendarDays,
+  CheckCircle2,
+  CircleAlert,
   FileText,
+  ListChecks,
   Loader2,
   RefreshCw,
   Save,
+  ShieldCheck,
   Sparkles,
   WandSparkles,
 } from "lucide-react";
@@ -100,6 +106,38 @@ type SectionResponse = ApiEnvelope & {
   section: BriefSection;
 };
 
+type QaStatus = "passed" | "warning" | "failed";
+
+type QaMessage = {
+  code: string;
+  message: string;
+  field?: string;
+  metadata?: Record<string, unknown> | null;
+};
+
+type PassedCheck = {
+  code: string;
+  message: string;
+};
+
+type BriefQaCheck = {
+  id: string;
+  briefId: string;
+  status: QaStatus | string;
+  score: number;
+  issues: QaMessage[];
+  warnings: QaMessage[];
+  passedChecks: PassedCheck[];
+  recommendedNextAction: string;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type BriefQaResponse = ApiEnvelope & {
+  qaCheck: BriefQaCheck | null;
+};
+
 type BriefEditState = {
   status: string;
   cta: string;
@@ -171,6 +209,177 @@ function alertStyles(kind: "error" | "success") {
     : "border-emerald-300/25 bg-emerald-500/10 text-emerald-100";
 }
 
+function qaStatusVariant(status: string | undefined): "success" | "warning" | "destructive" | "outline" {
+  if (status === "passed") return "success";
+  if (status === "warning") return "warning";
+  if (status === "failed") return "destructive";
+  return "outline";
+}
+
+function qaStatusStyles(status: string | undefined) {
+  if (status === "passed") return "border-emerald-300/25 bg-emerald-400/10";
+  if (status === "warning") return "border-amber-300/25 bg-amber-400/10";
+  if (status === "failed") return "border-red-300/25 bg-red-400/10";
+  return "border-white/10 bg-white/[0.03]";
+}
+
+function qaScoreBarStyles(status: string | undefined) {
+  if (status === "passed") return "bg-emerald-300";
+  if (status === "warning") return "bg-amber-300";
+  if (status === "failed") return "bg-red-300";
+  return "bg-slate-400";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function formatMetadataValue(value: unknown): string {
+  if (value === null || value === undefined) return "None";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.length ? `${value.length} item${value.length === 1 ? "" : "s"}` : "None";
+  if (isRecord(value)) return `${Object.keys(value).length} field${Object.keys(value).length === 1 ? "" : "s"}`;
+  return "Available";
+}
+
+function getBrandCompliance(metadata: Record<string, unknown> | null) {
+  const brandCompliance = metadata?.brandCompliance;
+  return isRecord(brandCompliance) ? brandCompliance : null;
+}
+
+function MessageList({
+  emptyText,
+  items,
+  tone,
+}: {
+  emptyText: string;
+  items: QaMessage[];
+  tone: "issue" | "warning";
+}) {
+  if (!items.length) {
+    return <p className="text-sm text-slate-400">{emptyText}</p>;
+  }
+
+  return (
+    <ul className="space-y-2">
+      {items.map((item, index) => (
+        <li key={`${item.code}-${index}`} className="rounded-lg border border-white/10 bg-black/20 p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={tone === "issue" ? "destructive" : "warning"}>{item.code}</Badge>
+            {item.field ? <span className="text-xs text-slate-500">{item.field}</span> : null}
+          </div>
+          <p className="mt-2 text-sm leading-6 text-slate-300">{item.message}</p>
+          {item.metadata ? (
+            <p className="mt-2 text-xs text-slate-500">Metadata: {formatMetadataValue(item.metadata)}</p>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function PassedCheckList({ checks }: { checks: PassedCheck[] }) {
+  if (!checks.length) {
+    return <p className="text-sm text-slate-400">No passed checks recorded yet.</p>;
+  }
+
+  return (
+    <ul className="space-y-2">
+      {checks.map((check, index) => (
+        <li key={`${check.code}-${index}`} className="rounded-lg border border-white/10 bg-black/20 p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="success">{check.code}</Badge>
+          </div>
+          <p className="mt-2 text-sm leading-6 text-slate-300">{check.message}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function BrandCompliancePanel({ metadata }: { metadata: Record<string, unknown> | null }) {
+  const brandCompliance = getBrandCompliance(metadata);
+
+  if (!brandCompliance) {
+    return <p className="text-sm text-slate-400">No brand compliance metadata was returned for this QA run.</p>;
+  }
+
+  const available = Boolean(brandCompliance.available);
+  const sourceCounts = isRecord(brandCompliance.sourceCounts) ? brandCompliance.sourceCounts : null;
+  const skippedReason = typeof brandCompliance.skippedReason === "string" ? brandCompliance.skippedReason : null;
+  const loadErrors = Array.isArray(brandCompliance.loadErrors)
+    ? brandCompliance.loadErrors.filter((item): item is string => typeof item === "string")
+    : [];
+  const forbiddenMatches = Array.isArray(brandCompliance.forbiddenMatches)
+    ? brandCompliance.forbiddenMatches.length
+    : 0;
+  const cautionMatches = Array.isArray(brandCompliance.cautionMatches) ? brandCompliance.cautionMatches.length : 0;
+  const requiredPhraseMissing = Array.isArray(brandCompliance.requiredPhraseMissing)
+    ? brandCompliance.requiredPhraseMissing.length
+    : 0;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant={available ? "success" : "outline"}>{available ? "available" : "skipped"}</Badge>
+        {typeof brandCompliance.noDiscountRule === "boolean" ? (
+          <Badge variant={brandCompliance.noDiscountRule ? "warning" : "secondary"}>
+            no discount rule: {brandCompliance.noDiscountRule ? "yes" : "no"}
+          </Badge>
+        ) : null}
+      </div>
+      {skippedReason ? <p className="text-sm leading-6 text-slate-300">{skippedReason}</p> : null}
+      {available ? (
+        <div className="grid gap-2 text-sm text-slate-300 sm:grid-cols-3">
+          <span className="rounded-lg bg-black/20 px-3 py-2">Forbidden: {forbiddenMatches}</span>
+          <span className="rounded-lg bg-black/20 px-3 py-2">Caution: {cautionMatches}</span>
+          <span className="rounded-lg bg-black/20 px-3 py-2">Missing required: {requiredPhraseMissing}</span>
+        </div>
+      ) : null}
+      {sourceCounts ? (
+        <div className="grid gap-2 text-xs text-slate-400 sm:grid-cols-2">
+          {Object.entries(sourceCounts).map(([key, value]) => (
+            <span key={key} className="rounded-lg bg-black/20 px-3 py-2">
+              {humanize(key)}: {formatMetadataValue(value)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {loadErrors.length ? (
+        <p className="text-xs leading-5 text-amber-100">Brain loading fallbacks: {loadErrors.join(", ")}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function QaDisclosure({
+  children,
+  count,
+  defaultOpen = false,
+  icon,
+  title,
+}: {
+  children: ReactNode;
+  count?: number;
+  defaultOpen?: boolean;
+  icon: ReactNode;
+  title: string;
+}) {
+  return (
+    <details className="group rounded-xl border border-white/10 bg-white/[0.03]" open={defaultOpen}>
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold text-slate-100">
+        <span className="inline-flex items-center gap-2">
+          {icon}
+          {title}
+        </span>
+        {typeof count === "number" ? <Badge variant="secondary">{count}</Badge> : null}
+      </summary>
+      <div className="border-t border-white/10 p-4">{children}</div>
+    </details>
+  );
+}
+
 export function PlanBriefClient() {
   const [startDate, setStartDate] = useState(() => nextDate(1));
   const [endDate, setEndDate] = useState(() => nextDate(7));
@@ -186,6 +395,7 @@ export function PlanBriefClient() {
   const [briefGeneratingId, setBriefGeneratingId] = useState<string | null>(null);
   const [isLoadingBrief, setIsLoadingBrief] = useState(false);
   const [isSavingBrief, setIsSavingBrief] = useState(false);
+  const [isRunningQa, setIsRunningQa] = useState(false);
   const [savingSectionId, setSavingSectionId] = useState<string | null>(null);
   const [message, setMessage] = useState<{ kind: "error" | "success"; text: string } | null>(null);
 
@@ -201,9 +411,16 @@ export function PlanBriefClient() {
     isLoading: briefsLoading,
     mutate: refreshBriefs,
   } = useSWR<BriefListResponse>("/api/briefs?limit=25", fetcher);
+  const {
+    data: qaData,
+    error: qaError,
+    isLoading: qaLoading,
+    mutate: refreshQa,
+  } = useSWR<BriefQaResponse>(selectedBriefId ? `/api/qa/briefs/${selectedBriefId}` : null, fetcher);
 
   const savedPlans = plansData?.plans ?? [];
   const briefs = briefsData?.briefs ?? [];
+  const latestQa = qaData?.qaCheck ?? null;
   const latestPlan = generatedPlan ?? savedPlans[0] ?? null;
   const generatedPlanItems = generatedPlan?.items ?? [];
   const briefSections = useMemo(
@@ -360,6 +577,25 @@ export function PlanBriefClient() {
       setMessage({ kind: "error", text: error instanceof Error ? error.message : "Could not save section." });
     } finally {
       setSavingSectionId(null);
+    }
+  }
+
+  async function runQa() {
+    if (!selectedBrief) return;
+    setIsRunningQa(true);
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/qa/briefs/${selectedBrief.id}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await parseApiResponse<BriefQaResponse>(response);
+      await refreshQa(data, { revalidate: false });
+      setMessage({ kind: "success", text: "QA completed for this brief." });
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof Error ? error.message : "Could not run QA." });
+    } finally {
+      setIsRunningQa(false);
     }
   }
 
@@ -617,6 +853,104 @@ export function PlanBriefClient() {
                       {isSavingBrief ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
                       Save Brief
                     </Button>
+                  </div>
+
+                  <div className={cn("rounded-xl border p-4", qaStatusStyles(latestQa?.status))}>
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <ShieldCheck size={17} className="text-orange-300" />
+                          <h3 className="text-sm font-semibold text-slate-100">QA preflight</h3>
+                          {latestQa ? <Badge variant={qaStatusVariant(latestQa.status)}>{latestQa.status}</Badge> : null}
+                        </div>
+                        <p className="mt-1 text-sm text-slate-400">
+                          {latestQa ? `Last run ${formatDate(latestQa.createdAt)}` : "Run QA before scheduling review."}
+                        </p>
+                      </div>
+                      <Button type="button" variant="outline" onClick={runQa} disabled={isRunningQa}>
+                        {isRunningQa ? <Loader2 size={16} className="animate-spin" /> : <ShieldCheck size={16} />}
+                        Run QA
+                      </Button>
+                    </div>
+
+                    {qaLoading ? (
+                      <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-slate-400">
+                        Loading latest QA result...
+                      </div>
+                    ) : qaError ? (
+                      <div className={cn("mt-4 rounded-xl border px-4 py-3 text-sm", alertStyles("error"))}>
+                        Could not load QA result.
+                      </div>
+                    ) : latestQa ? (
+                      <div className="mt-4 space-y-4">
+                        <div className="grid gap-3 sm:grid-cols-[120px_1fr] sm:items-center">
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Score</p>
+                            <p className="mt-1 text-2xl font-semibold text-slate-50">{latestQa.score}</p>
+                          </div>
+                          <div className="h-2 overflow-hidden rounded-full bg-black/30">
+                            <div
+                              className={cn("h-full rounded-full", qaScoreBarStyles(latestQa.status))}
+                              style={{ width: `${Math.max(0, Math.min(100, latestQa.score))}%` }}
+                            />
+                          </div>
+                        </div>
+                        {latestQa.recommendedNextAction ? (
+                          <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                              Recommended next action
+                            </p>
+                            <p className="mt-2 text-sm leading-6 text-slate-300">
+                              {latestQa.recommendedNextAction}
+                            </p>
+                          </div>
+                        ) : null}
+                        <div className="space-y-3">
+                          <QaDisclosure
+                            count={latestQa.issues.length}
+                            defaultOpen={latestQa.issues.length > 0}
+                            icon={<CircleAlert size={16} className="text-red-200" />}
+                            title="Issues"
+                          >
+                            <MessageList
+                              emptyText="No blocking issues found."
+                              items={latestQa.issues}
+                              tone="issue"
+                            />
+                          </QaDisclosure>
+                          <QaDisclosure
+                            count={latestQa.warnings.length}
+                            defaultOpen={!latestQa.issues.length && latestQa.warnings.length > 0}
+                            icon={<AlertTriangle size={16} className="text-amber-200" />}
+                            title="Warnings"
+                          >
+                            <MessageList
+                              emptyText="No warnings found."
+                              items={latestQa.warnings}
+                              tone="warning"
+                            />
+                          </QaDisclosure>
+                          <QaDisclosure
+                            count={latestQa.passedChecks.length}
+                            icon={<CheckCircle2 size={16} className="text-emerald-200" />}
+                            title="Passed checks"
+                          >
+                            <PassedCheckList checks={latestQa.passedChecks} />
+                          </QaDisclosure>
+                          <QaDisclosure
+                            defaultOpen={Boolean(getBrandCompliance(latestQa.metadata))}
+                            icon={<ListChecks size={16} className="text-sky-200" />}
+                            title="Brand compliance"
+                          >
+                            <BrandCompliancePanel metadata={latestQa.metadata} />
+                          </QaDisclosure>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-slate-400">
+                        No QA result yet for this brief.
+                      </div>
+                    )}
                   </div>
 
                   <div className="grid gap-3 lg:grid-cols-2">
