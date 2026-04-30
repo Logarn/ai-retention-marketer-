@@ -10,6 +10,7 @@ import {
   Brain,
   ChevronDown,
   ChevronRight,
+  ClipboardList,
   GraduationCap,
   LayoutGrid,
   Megaphone,
@@ -24,6 +25,7 @@ const navItems = [
   { href: "/customers", label: "Customers", icon: Users2 },
   { href: "/segments", label: "Segments", icon: BarChart3 },
   { href: "/campaigns", label: "Campaigns", icon: Megaphone },
+  { href: "/planner", label: "Planner", icon: ClipboardList },
   { href: "/composer", label: "AI Composer", icon: Bot },
   { href: "/templates", label: "Templates", icon: LayoutGrid },
 ];
