@@ -196,10 +196,53 @@ model CampaignPlanItem {
   metadata          Json?
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
+  briefs            CampaignBrief[]
 
   @@index([planId, suggestedSendDate])
   @@index([campaignType])
   @@index([status])
+}
+
+model CampaignBrief {
+  id             String                 @id @default(cuid())
+  planItemId     String?
+  planItem       CampaignPlanItem?      @relation(fields: [planItemId], references: [id], onDelete: SetNull)
+  title          String
+  campaignType   String
+  segment        String
+  goal           String
+  subjectLines   Json
+  previewTexts   Json
+  angle          String                 @db.Text
+  primaryProduct String?
+  status         String                 @default("draft")
+  designNotes    String?                @db.Text
+  cta            String?
+  metadata       Json?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+  sections       CampaignBriefSection[]
+
+  @@index([planItemId])
+  @@index([status, createdAt])
+  @@index([campaignType])
+  @@index([segment])
+}
+
+model CampaignBriefSection {
+  id        String        @id @default(cuid())
+  briefId   String
+  brief     CampaignBrief @relation(fields: [briefId], references: [id], onDelete: Cascade)
+  type      String
+  heading   String?
+  body      String        @db.Text
+  sortOrder Int           @default(0)
+  metadata  Json?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@index([briefId, sortOrder])
+  @@index([type])
 }
 
 model MessageTemplate {
