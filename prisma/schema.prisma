@@ -162,6 +162,46 @@ model CampaignMemory {
   @@index([campaignType, sentAt])
 }
 
+model CampaignPlan {
+  id             String             @id @default(cuid())
+  name           String
+  dateRangeStart DateTime
+  dateRangeEnd   DateTime
+  status         String             @default("draft")
+  summary        String?            @db.Text
+  strategyNotes  String?            @db.Text
+  metadata       Json?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  items          CampaignPlanItem[]
+
+  @@index([status, createdAt])
+  @@index([dateRangeStart, dateRangeEnd])
+}
+
+model CampaignPlanItem {
+  id                String       @id @default(cuid())
+  planId            String
+  plan              CampaignPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  title             String
+  campaignType      String
+  goal              String
+  segment           String
+  suggestedSendDate DateTime
+  subjectLineAngle  String?
+  primaryProduct    String?
+  why               String       @db.Text
+  confidenceScore   Float?
+  status            String       @default("proposed")
+  metadata          Json?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@index([planId, suggestedSendDate])
+  @@index([campaignType])
+  @@index([status])
+}
+
 model MessageTemplate {
   id        String   @id @default(cuid())
   name      String
