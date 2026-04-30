@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import {
   briefQaInclude,
   cleanBriefId,
+  loadBrainGuidance,
   parseOptionalQaRunBody,
   runBriefQa,
   serializeBriefQaCheck,
@@ -56,7 +57,8 @@ export async function POST(request: Request, context: RouteContext) {
       );
     }
 
-    const result = runBriefQa(brief);
+    const brainGuidance = await loadBrainGuidance();
+    const result = runBriefQa(brief, brainGuidance);
     const metadata = {
       ...result.metadata,
       requestMetadata: body.metadata,
