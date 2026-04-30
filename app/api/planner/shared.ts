@@ -10,9 +10,9 @@ const MAX_RANGE_DAYS = 90;
 
 const generatePlanSchema = z
   .object({
-    startDate: z.string().trim().min(1, "startDate is required"),
-    endDate: z.string().trim().min(1, "endDate is required"),
-    campaignCount: z.union([z.number(), z.string()]).optional(),
+    startDate: z.unknown().optional(),
+    endDate: z.unknown().optional(),
+    campaignCount: z.unknown().optional(),
     focus: z.string().trim().max(240).optional().nullable(),
     constraints: z.union([z.string(), z.array(z.string())]).optional().nullable(),
     preferredSegments: z.union([z.string(), z.array(z.string())]).optional().nullable(),
@@ -144,8 +144,13 @@ async function withPlannerFallback<T>(query: PromiseLike<T>, fallback: T, label:
   }
 }
 
-function parseDate(value: string, field: string, issues: string[]) {
-  const parsed = new Date(value);
+function parseDate(value: unknown, field: string, issues: string[]) {
+  if (typeof value !== "string" || !value.trim()) {
+    issues.push(`${field} must be a valid date string.`);
+    return null;
+  }
+
+  const parsed = new Date(value.trim());
   if (Number.isNaN(parsed.getTime())) {
     issues.push(`${field} must be a valid date string.`);
     return null;
@@ -186,8 +191,13 @@ function dateRangeDays(startDate: Date, endDate: Date) {
   return Math.floor((endDate.getTime() - startDate.getTime()) / DAY_MS);
 }
 
-function parseCampaignCount(value: string | number | undefined, issues: string[]) {
+function parseCampaignCount(value: unknown, issues: string[]) {
   if (value === undefined || value === null || value === "") return DEFAULT_CAMPAIGN_COUNT;
+  if (typeof value !== "number" && typeof value !== "string") {
+    issues.push("campaignCount must be a positive whole number.");
+    return DEFAULT_CAMPAIGN_COUNT;
+  }
+
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
     issues.push("campaignCount must be a positive whole number.");
