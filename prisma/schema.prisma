@@ -133,6 +133,35 @@ model CampaignMetrics {
   updatedAt    DateTime @updatedAt
 }
 
+model CampaignMemory {
+  id                  String   @id @default(cuid())
+  campaignId          String
+  name                String
+  campaignType        String?
+  subjectLine         String?
+  previewText         String?
+  segment             String?
+  sentAt              DateTime
+  audienceSize        Int?
+  openRate            Float?
+  clickRate           Float?
+  conversionRate      Float?
+  orders              Int?
+  revenue             Float    @default(0)
+  revenuePerRecipient Float?
+  notes               String?
+  winningInsight      String?
+  source              String   @default("manual")
+  metadata            Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([campaignId])
+  @@index([sentAt])
+  @@index([segment, sentAt])
+  @@index([campaignType, sentAt])
+}
+
 model MessageTemplate {
   id        String   @id @default(cuid())
   name      String
