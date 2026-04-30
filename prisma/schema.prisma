@@ -222,6 +222,7 @@ model CampaignBrief {
   createdAt      DateTime               @default(now())
   updatedAt      DateTime               @updatedAt
   sections       CampaignBriefSection[]
+  qaChecks       BriefQaCheck[]
 
   @@index([planItemId])
   @@index([status, createdAt])
@@ -243,6 +244,23 @@ model CampaignBriefSection {
 
   @@index([briefId, sortOrder])
   @@index([type])
+}
+
+model BriefQaCheck {
+  id           String        @id @default(cuid())
+  briefId      String
+  brief        CampaignBrief @relation(fields: [briefId], references: [id], onDelete: Cascade)
+  status       String
+  score        Int
+  issues       Json
+  warnings     Json
+  passedChecks Json
+  metadata     Json?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([briefId, createdAt])
+  @@index([status, createdAt])
 }
 
 model MessageTemplate {
