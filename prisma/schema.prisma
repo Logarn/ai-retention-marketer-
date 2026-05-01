@@ -263,6 +263,22 @@ model BriefQaCheck {
   @@index([status, createdAt])
 }
 
+model WorkflowRun {
+  id        String   @id @default(cuid())
+  type      String
+  status    String
+  input     Json
+  output    Json?
+  error     String?  @db.Text
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type, createdAt])
+  @@index([status, createdAt])
+  @@index([createdAt])
+}
+
 model MessageTemplate {
   id        String   @id @default(cuid())
   name      String

@@ -20,9 +20,12 @@ import {
   runBriefQa,
   serializeBriefQaCheck,
 } from "@/app/api/qa/shared";
+import { toPrismaJson } from "@/app/api/agent/workflows/shared";
 
 const MAX_PROMPT_LENGTH = 2000;
 const DEFAULT_RANGE_DAYS = 7;
+const WORKFLOW_TYPE = "plan-brief-qa";
+const WORKFLOW_GENERATOR = "agent-orchestrator-v0";
 
 const workflowSchema = z
   .object({
@@ -44,6 +47,10 @@ type CreatedPlan = Prisma.CampaignPlanGetPayload<{
     };
   };
 }>;
+
+type WorkflowRunRef = {
+  id: string;
+};
 
 function tomorrowAtNoon() {
   const date = new Date();
@@ -152,9 +159,9 @@ async function createPlan(input: WorkflowInput) {
       metadata: {
         ...generated.metadata,
         workflow: {
-          type: "plan-brief-qa",
+          type: WORKFLOW_TYPE,
           prompt: input.prompt,
-          generatedBy: "agent-orchestrator-v0",
+          generatedBy: WORKFLOW_GENERATOR,
         },
       } as Prisma.InputJsonValue,
       items: {
@@ -202,8 +209,8 @@ async function createBriefs(plan: CreatedPlan) {
         designNotes: null,
         metadata: {
           workflow: {
-            type: "plan-brief-qa",
-            generatedBy: "agent-orchestrator-v0",
+            type: WORKFLOW_TYPE,
+            generatedBy: WORKFLOW_GENERATOR,
           },
         },
       },
@@ -227,8 +234,8 @@ async function createBriefs(plan: CreatedPlan) {
         metadata: {
           ...generated.metadata,
           workflow: {
-            type: "plan-brief-qa",
-            generatedBy: "agent-orchestrator-v0",
+            type: WORKFLOW_TYPE,
+            generatedBy: WORKFLOW_GENERATOR,
             planId: plan.id,
             planItemId: item.id,
           },
@@ -279,8 +286,8 @@ async function runQaForBriefs(briefIds: string[]) {
         metadata: {
           ...result.metadata,
           workflow: {
-            type: "plan-brief-qa",
-            generatedBy: "agent-orchestrator-v0",
+            type: WORKFLOW_TYPE,
+            generatedBy: WORKFLOW_GENERATOR,
           },
         } as Prisma.InputJsonValue,
       },
@@ -322,7 +329,58 @@ function recommendedNextAction(qaResults: Array<{ status: string }>) {
   return "All generated briefs passed QA. Review the plan and briefs, then move approved items toward scheduling.";
 }
 
+async function createWorkflowRun(input: WorkflowInput) {
+  return prisma.workflowRun.create({
+    data: {
+      type: WORKFLOW_TYPE,
+      status: "running",
+      input: toPrismaJson(input),
+      metadata: {
+        generatedBy: WORKFLOW_GENERATOR,
+        startedAt: new Date().toISOString(),
+      } as Prisma.InputJsonValue,
+    },
+    select: { id: true },
+  });
+}
+
+async function markWorkflowCompleted(workflowId: string, output: unknown) {
+  await prisma.workflowRun.update({
+    where: { id: workflowId },
+    data: {
+      status: "completed",
+      output: toPrismaJson(output),
+      error: null,
+      metadata: {
+        generatedBy: WORKFLOW_GENERATOR,
+        completedAt: new Date().toISOString(),
+      } as Prisma.InputJsonValue,
+    },
+  });
+}
+
+async function markWorkflowFailed(
+  workflowId: string,
+  error: string,
+  output: unknown,
+) {
+  await prisma.workflowRun.update({
+    where: { id: workflowId },
+    data: {
+      status: "failed",
+      output: toPrismaJson(output),
+      error,
+      metadata: {
+        generatedBy: WORKFLOW_GENERATOR,
+        failedAt: new Date().toISOString(),
+      } as Prisma.InputJsonValue,
+    },
+  });
+}
+
 export async function POST(request: Request) {
+  let workflowRun: WorkflowRunRef | null = null;
+
   try {
     const body = await request.json().catch(() => null);
     const parsed = parseWorkflowBody(body);
@@ -338,42 +396,57 @@ export async function POST(request: Request) {
       );
     }
 
+    workflowRun = await createWorkflowRun(parsed.data);
     const planResult = await createPlan(parsed.data);
 
     if (!planResult.ok) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "Invalid planner request",
-          issues: planResult.issues,
-        },
-        { status: 400 },
-      );
+      const output = {
+        ok: false,
+        workflowId: workflowRun.id,
+        error: "Invalid planner request",
+        issues: planResult.issues,
+      };
+      await markWorkflowFailed(workflowRun.id, "Invalid planner request", output);
+
+      return NextResponse.json(output, { status: 400 });
     }
 
     const briefs = await createBriefs(planResult.plan);
     const qaResults = await runQaForBriefs(briefs.map((brief) => brief.id));
     const summary = workflowSummary(planResult.plan, qaResults);
+    const responsePayload = {
+      ok: true,
+      workflowId: workflowRun.id,
+      plan: serializePlan(planResult.plan),
+      briefs: briefs.map(serializeBrief),
+      qaResults: qaResults.map(serializeBriefQaCheck),
+      summary,
+      recommendedNextAction: recommendedNextAction(qaResults),
+    };
 
-    return NextResponse.json(
-      {
-        ok: true,
-        workflowId: null,
-        plan: serializePlan(planResult.plan),
-        briefs: briefs.map(serializeBrief),
-        qaResults: qaResults.map(serializeBriefQaCheck),
-        summary,
-        recommendedNextAction: recommendedNextAction(qaResults),
-      },
-      { status: 201 },
-    );
+    await markWorkflowCompleted(workflowRun.id, responsePayload);
+
+    return NextResponse.json(responsePayload, { status: 201 });
   } catch (error) {
     console.error("POST /api/agent/workflows/plan-brief-qa failed", error);
+    const output = {
+      ok: false,
+      workflowId: workflowRun?.id ?? null,
+      error: "Failed to run Plan -> Brief -> QA workflow",
+    };
+
+    if (workflowRun) {
+      await markWorkflowFailed(
+        workflowRun.id,
+        "Failed to run Plan -> Brief -> QA workflow",
+        output,
+      ).catch(() => {
+        console.error("Failed to persist WorkflowRun failure state");
+      });
+    }
+
     return NextResponse.json(
-      {
-        ok: false,
-        error: "Failed to run Plan -> Brief -> QA workflow",
-      },
+      output,
       { status: 500 },
     );
   }
