@@ -152,6 +152,30 @@ function asWorkflowOutput(value: unknown): WorkflowOutput | null {
   return value as WorkflowOutput;
 }
 
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function asPlan(value: unknown): WorkflowPlan | null {
+  if (!isRecord(value)) return null;
+  return {
+    id: typeof value.id === "string" ? value.id : "",
+    name: typeof value.name === "string" ? value.name : "Untitled plan",
+    summary: typeof value.summary === "string" ? value.summary : null,
+    strategyNotes: typeof value.strategyNotes === "string" ? value.strategyNotes : null,
+    itemCount: typeof value.itemCount === "number" ? value.itemCount : asArray<PlanItem>(value.items).length,
+    items: asArray<PlanItem>(value.items),
+  };
+}
+
+function getWorkflowBriefs(output: WorkflowOutput | null) {
+  return asArray<WorkflowBrief>(output?.briefs);
+}
+
+function getWorkflowQaResults(output: WorkflowOutput | null) {
+  return asArray<WorkflowQaResult>(output?.qaResults);
+}
+
 function splitConstraints(value: string) {
   return value
     .split(/[\n,]/)
@@ -243,8 +267,8 @@ export function AgentWorkflowCanvas() {
   const output = useMemo(() => asWorkflowOutput(selectedWorkflow?.output), [selectedWorkflow]);
   const qaByBriefId = useMemo(() => {
     const map = new Map<string, WorkflowQaResult>();
-    for (const qa of output?.qaResults ?? []) {
-      map.set(qa.briefId, qa);
+    for (const qa of getWorkflowQaResults(output)) {
+      if (qa?.briefId) map.set(qa.briefId, qa);
     }
     return map;
   }, [output]);
@@ -254,7 +278,7 @@ export function AgentWorkflowCanvas() {
     try {
       const response = await fetch("/api/agent/workflows?type=plan-brief-qa&limit=8");
       const data = await parseApiResponse<WorkflowListResponse>(response);
-      setRecentRuns(data.workflows);
+      setRecentRuns(asArray<WorkflowSummary>(data.workflows));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load workflows");
     } finally {
@@ -285,7 +309,7 @@ export function AgentWorkflowCanvas() {
     const trimmedPrompt = prompt.trim();
 
     if (!trimmedPrompt) {
-      setError("prompt is required.");
+      setError("Enter a prompt before running the workflow.");
       return;
     }
 
@@ -410,7 +434,7 @@ export function AgentWorkflowCanvas() {
                   <p className="mt-1 text-sm text-slate-400">Planning, briefing, and checking QA.</p>
                 </div>
               </div>
-            ) : selectedWorkflow && output ? (
+            ) : selectedWorkflow ? (
               <WorkflowOutputView workflow={selectedWorkflow} output={output} qaByBriefId={qaByBriefId} />
             ) : (
               <div className="flex min-h-[360px] flex-col items-center justify-center gap-3 text-center">
@@ -487,11 +511,23 @@ function WorkflowOutputView({
   qaByBriefId,
 }: {
   workflow: WorkflowDetail;
-  output: WorkflowOutput;
+  output: WorkflowOutput | null;
   qaByBriefId: Map<string, WorkflowQaResult>;
 }) {
-  const plan = output.plan;
-  const briefs = output.briefs ?? [];
+  if (!output) {
+    return (
+      <div className="space-y-4">
+        <WorkflowHeader workflow={workflow} output={null} />
+        <div className="rounded-xl border border-amber-300/25 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+          This workflow has no saved output yet. It may still be running, or it was created before output snapshots were stored.
+        </div>
+      </div>
+    );
+  }
+
+  const plan = asPlan(output.plan);
+  const planItems = plan?.items ?? [];
+  const briefs = getWorkflowBriefs(output);
 
   if (!output.ok) {
     return (
@@ -516,15 +552,15 @@ function WorkflowOutputView({
             <h2 className="text-sm font-semibold text-slate-100">Plan</h2>
           </div>
           <div className="grid gap-3">
-            {plan.items.map((item) => (
-              <article key={item.id} className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+            {planItems.length ? planItems.map((item, index) => (
+              <article key={item.id || `plan-item-${index}`} className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <h3 className="text-sm font-semibold text-slate-100">{item.title}</h3>
-                    <p className="mt-1 text-sm text-slate-400">{item.goal}</p>
+                    <h3 className="text-sm font-semibold text-slate-100">{item.title || `Plan item ${index + 1}`}</h3>
+                    <p className="mt-1 text-sm text-slate-400">{item.goal || "No goal saved."}</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <Badge variant="secondary">{item.campaignType}</Badge>
+                    <Badge variant="secondary">{item.campaignType || "Campaign"}</Badge>
                     <Badge variant="outline">{formatDate(item.suggestedSendDate)}</Badge>
                   </div>
                 </div>
@@ -532,7 +568,7 @@ function WorkflowOutputView({
                   <p>
                     <span className="text-slate-500">Segment</span>
                     <br />
-                    {item.segment}
+                    {item.segment || "Not set"}
                   </p>
                   <p>
                     <span className="text-slate-500">Angle</span>
@@ -545,9 +581,13 @@ function WorkflowOutputView({
                     {formatPercent(item.confidenceScore)}
                   </p>
                 </div>
-                <p className="mt-3 text-sm leading-6 text-slate-300">{item.why}</p>
+                <p className="mt-3 text-sm leading-6 text-slate-300">{item.why || "No reasoning saved."}</p>
               </article>
-            ))}
+            )) : (
+              <p className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-slate-400">
+                No plan items were saved for this workflow.
+              </p>
+            )}
           </div>
         </section>
       ) : null}
@@ -558,18 +598,22 @@ function WorkflowOutputView({
           <h2 className="text-sm font-semibold text-slate-100">Briefs and QA</h2>
         </div>
         <div className="space-y-3">
-          {briefs.map((brief) => {
+          {briefs.length ? briefs.map((brief, index) => {
             const qa = qaByBriefId.get(brief.id);
-            return <BriefReview key={brief.id} brief={brief} qa={qa} />;
-          })}
+            return <BriefReview key={brief.id || `brief-${index}`} brief={brief} qa={qa} />;
+          }) : (
+            <p className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-slate-400">
+              No generated briefs were saved for this workflow.
+            </p>
+          )}
         </div>
       </section>
     </div>
   );
 }
 
-function WorkflowHeader({ workflow, output }: { workflow: WorkflowDetail; output: WorkflowOutput }) {
-  const qa = output.summary?.qa;
+function WorkflowHeader({ workflow, output }: { workflow: WorkflowDetail; output: WorkflowOutput | null }) {
+  const qa = output?.summary?.qa;
 
   return (
     <section className="space-y-4">
@@ -579,19 +623,19 @@ function WorkflowHeader({ workflow, output }: { workflow: WorkflowDetail; output
             <Badge variant={statusVariant(workflow.status)}>{workflow.status}</Badge>
             <span className="text-xs text-slate-500">{formatDateTime(workflow.createdAt)}</span>
           </div>
-          <h2 className="mt-2 text-lg font-semibold text-slate-50">{output.summary?.text ?? workflow.type}</h2>
+          <h2 className="mt-2 text-lg font-semibold text-slate-50">{output?.summary?.text ?? workflow.type}</h2>
         </div>
         {qa ? (
           <div className="grid grid-cols-4 gap-2 text-center">
-            <Metric label="Items" value={String(output.summary?.planItems ?? 0)} />
-            <Metric label="Briefs" value={String(output.summary?.briefsGenerated ?? 0)} />
+            <Metric label="Items" value={String(output?.summary?.planItems ?? 0)} />
+            <Metric label="Briefs" value={String(output?.summary?.briefsGenerated ?? 0)} />
             <Metric label="QA" value={String(qa.averageScore ?? 0)} />
             <Metric label="Pass" value={String(qa.passed ?? 0)} />
           </div>
         ) : null}
       </div>
 
-      {output.recommendedNextAction ? (
+      {output?.recommendedNextAction ? (
         <div className="flex items-start gap-3 rounded-xl border border-emerald-300/20 bg-emerald-300/10 px-4 py-3">
           <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-200" />
           <p className="text-sm leading-6 text-emerald-50">{output.recommendedNextAction}</p>
@@ -611,15 +655,19 @@ function Metric({ label, value }: { label: string; value: string }) {
 }
 
 function BriefReview({ brief, qa }: { brief: WorkflowBrief; qa: WorkflowQaResult | undefined }) {
+  const subjectLines = asArray<string>(brief.subjectLines);
+  const previewTexts = asArray<string>(brief.previewTexts);
+  const sections = asArray<BriefSection>(brief.sections);
+
   return (
     <article className={cn("rounded-xl border p-4", qaTone(qa?.status))}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold text-slate-100">{brief.title}</h3>
-          <p className="mt-1 text-sm text-slate-400">{brief.angle}</p>
+          <h3 className="text-sm font-semibold text-slate-100">{brief.title || "Untitled brief"}</h3>
+          <p className="mt-1 text-sm text-slate-400">{brief.angle || "No angle saved."}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Badge variant="secondary">{brief.campaignType}</Badge>
+          <Badge variant="secondary">{brief.campaignType || "Campaign"}</Badge>
           {qa ? <Badge variant={statusVariant(qa.status)}>{qa.status} · {qa.score}</Badge> : null}
         </div>
       </div>
@@ -628,16 +676,16 @@ function BriefReview({ brief, qa }: { brief: WorkflowBrief; qa: WorkflowQaResult
         <div>
           <p className="text-xs font-medium uppercase text-slate-500">Subject lines</p>
           <div className="mt-2 flex flex-wrap gap-2">
-            {brief.subjectLines.map((subject) => (
+            {subjectLines.length ? subjectLines.map((subject) => (
               <span key={subject} className="rounded-full border border-white/10 bg-black/15 px-2.5 py-1 text-xs text-slate-200">
                 {subject}
               </span>
-            ))}
+            )) : <p className="text-sm text-slate-400">No subject lines saved.</p>}
           </div>
         </div>
         <div>
           <p className="text-xs font-medium uppercase text-slate-500">Preview text</p>
-          <p className="mt-2 text-sm text-slate-300">{brief.previewTexts[0] ?? "Not set"}</p>
+          <p className="mt-2 text-sm text-slate-300">{previewTexts[0] ?? "Not set"}</p>
         </div>
       </div>
 
@@ -652,15 +700,15 @@ function BriefReview({ brief, qa }: { brief: WorkflowBrief; qa: WorkflowQaResult
         </div>
       </div>
 
-      {brief.sections?.length ? (
+      {sections.length ? (
         <details className="mt-4 rounded-lg border border-white/10 bg-black/10 px-3 py-2">
           <summary className="cursor-pointer text-sm font-medium text-slate-200">Sections</summary>
           <div className="mt-3 space-y-3">
-            {brief.sections.map((section) => (
-              <div key={section.id} className="border-t border-white/10 pt-3">
-                <p className="text-xs font-semibold uppercase text-slate-500">{section.type}</p>
+            {sections.map((section, index) => (
+              <div key={section.id || `section-${index}`} className="border-t border-white/10 pt-3">
+                <p className="text-xs font-semibold uppercase text-slate-500">{section.type || `section ${index + 1}`}</p>
                 {section.heading ? <p className="mt-1 text-sm font-medium text-slate-100">{section.heading}</p> : null}
-                <p className="mt-1 text-sm leading-6 text-slate-300">{section.body}</p>
+                <p className="mt-1 text-sm leading-6 text-slate-300">{section.body || "No body saved."}</p>
               </div>
             ))}
           </div>
