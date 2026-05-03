@@ -7,11 +7,13 @@ import {
   serializeWorkflowRunSummary,
 } from "@/app/api/agent/workflows/shared";
 import { POST as planBriefQaWorkflow } from "@/app/api/agent/workflows/plan-brief-qa/route";
+import { buildAgentContext } from "@/lib/agent/context/build-context";
 import { getAgentToolByName } from "@/lib/agent/tools/registry";
 import { prisma } from "@/lib/prisma";
 import { isPlaybookType, listPlaybooks } from "@/lib/playbooks";
+import type { AgentContextResult } from "@/lib/agent/context/types";
 import type { AgentToolDefinition } from "@/lib/agent/tools/types";
-import type { PlaybookType } from "@/lib/playbooks";
+import type { PlaybookType, WorklinPlaybook } from "@/lib/playbooks";
 
 const MAX_MESSAGE_LENGTH = 2000;
 const DEFAULT_WORKFLOW_LIMIT = 10;
@@ -46,9 +48,64 @@ type CommandResponseInput = {
   result?: unknown;
   message: string;
   status?: number;
+  contextSummary?: CommandContextSummary | null;
 };
 
 type JsonPostHandler = (request: Request) => Promise<Response>;
+
+type CommandContextSummary = {
+  query: string;
+  summary: string;
+  missing: string[];
+  brand: {
+    name: string | null;
+    rules: number;
+    ctas: number;
+    phrases: number;
+  };
+  signals: {
+    approval: boolean;
+    sendOrSchedule: boolean;
+    planning: boolean;
+    noDiscount: boolean;
+    vip: boolean;
+    flow: boolean;
+    campaign: boolean;
+  };
+  playbooks: Array<{
+    id: string;
+    name: string;
+    type: PlaybookType;
+    permissionLevel: string;
+  }>;
+  recentWorkflows: Array<{
+    id: string;
+    type: string;
+    status: string;
+    createdAt: string;
+  }>;
+  recentEligibleWorkflows: Array<{
+    id: string;
+    type: string;
+    status: string;
+    createdAt: string;
+    summary: unknown;
+    recommendedNextAction: unknown;
+  }>;
+  referencedWorkflow: {
+    id: string;
+    type: string;
+    status: string;
+    createdAt: string;
+  } | null;
+  recentDrafts: number;
+  relevantBriefs: number;
+  campaignMemory: {
+    totalCampaigns: number;
+    bestSegmentByRevenue: string | null;
+    bestCampaignTypeByRevenue: string | null;
+  };
+};
 
 function compactTool(tool: AgentToolDefinition | null) {
   if (!tool) return null;
@@ -70,6 +127,7 @@ function commandResponse({
   result = {},
   message,
   status = 200,
+  contextSummary,
 }: CommandResponseInput) {
   const toolDefinition = tool ? getAgentToolByName(tool) : null;
 
@@ -79,6 +137,7 @@ function commandResponse({
       intent,
       tool,
       toolMetadata: compactTool(toolDefinition),
+      ...(contextSummary ? { contextSummary } : {}),
       result,
       message,
     },
@@ -106,7 +165,7 @@ function detectsApprovalIntent(message: string) {
 
 function detectsPlanBriefQaIntent(message: string) {
   return (
-    /\b(plan|prep|prepare|create|generate|build)\b.*\b(campaign|campaigns|retention|email|emails)\b/i.test(message) ||
+    /\b(plan|prep|prepare|create|generate|build)\b.*\b(campaign|campaigns|retention|email|emails|flow|flows|lifecycle)\b/i.test(message) ||
     /\b(campaign|campaigns|retention\s+campaigns?)\b.*\b(next\s+week|tomorrow|this\s+week|no\s+discounts?)\b/i.test(message)
   );
 }
@@ -143,6 +202,114 @@ function inferIntent(message: string, workflowId?: string): CommandIntent {
   return "clarify";
 }
 
+function detectsNoDiscountSignal(message: string, playbooks: WorklinPlaybook[] = []) {
+  return (
+    /\b(no|without|avoid)\b.*\b(discounts?|coupons?|sales?|markdowns?|promos?|promotions?|offers?)\b/i.test(message) ||
+    playbooks.some((playbook) => playbook.id === "no_discount_education")
+  );
+}
+
+function detectsVipSignal(message: string, playbooks: WorklinPlaybook[] = []) {
+  return /\b(vip|early\s+access|loyalty|loyal|champions?)\b/i.test(message) ||
+    playbooks.some((playbook) => playbook.id === "vip_early_access");
+}
+
+function detectsFlowSignal(message: string, playbooks: WorklinPlaybook[] = []) {
+  return /\b(flows?|lifecycle|automation|welcome|abandon|cart|checkout|replenish|replenishment|winback|win\s+back)\b/i.test(message) ||
+    playbooks.some((playbook) => playbook.type === "flow");
+}
+
+function detectsCampaignSignal(message: string, playbooks: WorklinPlaybook[] = []) {
+  return /\b(campaigns?|emails?|retention)\b/i.test(message) ||
+    playbooks.some((playbook) => playbook.type === "campaign");
+}
+
+function compactPlaybook(playbook: WorklinPlaybook) {
+  return {
+    id: playbook.id,
+    name: playbook.name,
+    type: playbook.type,
+    permissionLevel: playbook.permissionLevel,
+  };
+}
+
+function isRecentEligibleWorkflow(workflow: AgentContextResult["context"]["recentWorkflows"][number]) {
+  return workflow.type === "plan-brief-qa" && workflow.status === "completed";
+}
+
+function compactContextSummary(result: AgentContextResult): CommandContextSummary {
+  const context = result.context;
+  const playbooks = context.playbooks.map(compactPlaybook);
+  const recentWorkflows = context.recentWorkflows.slice(0, DEFAULT_WORKFLOW_LIMIT).map((workflow) => ({
+    id: workflow.id,
+    type: workflow.type,
+    status: workflow.status,
+    createdAt: workflow.createdAt,
+  }));
+  const recentEligibleWorkflows = context.recentWorkflows
+    .filter(isRecentEligibleWorkflow)
+    .map((workflow) => ({
+      id: workflow.id,
+      type: workflow.type,
+      status: workflow.status,
+      createdAt: workflow.createdAt,
+      summary: workflow.summary ?? null,
+      recommendedNextAction: workflow.recommendedNextAction ?? null,
+    }));
+
+  return {
+    query: result.query,
+    summary: result.summary,
+    missing: result.missing,
+    brand: {
+      name: context.brand.profile?.brandName ?? null,
+      rules: context.brand.rules.length,
+      ctas: context.brand.ctas.length,
+      phrases: context.brand.phrases.length,
+    },
+    signals: {
+      approval: detectsApprovalIntent(result.query),
+      sendOrSchedule: detectsSendOrScheduleIntent(result.query),
+      planning: detectsPlanBriefQaIntent(result.query),
+      noDiscount: detectsNoDiscountSignal(result.query, context.playbooks),
+      vip: detectsVipSignal(result.query, context.playbooks),
+      flow: detectsFlowSignal(result.query, context.playbooks),
+      campaign: detectsCampaignSignal(result.query, context.playbooks),
+    },
+    playbooks,
+    recentWorkflows,
+    recentEligibleWorkflows,
+    referencedWorkflow: context.referencedWorkflow
+      ? {
+          id: context.referencedWorkflow.id,
+          type: context.referencedWorkflow.type,
+          status: context.referencedWorkflow.status,
+          createdAt: context.referencedWorkflow.createdAt,
+        }
+      : null,
+    recentDrafts: context.recentDrafts.length,
+    relevantBriefs: context.relevantBriefs.length,
+    campaignMemory: {
+      totalCampaigns: context.campaignMemory.summary.totalCampaigns,
+      bestSegmentByRevenue: context.campaignMemory.bestSegmentByRevenue?.key ?? null,
+      bestCampaignTypeByRevenue: context.campaignMemory.bestCampaignTypeByRevenue?.key ?? null,
+    },
+  };
+}
+
+function contextPlanningConstraints(contextSummary: CommandContextSummary) {
+  const constraints = [];
+  if (contextSummary.signals.noDiscount) constraints.push("no discounts");
+  if (contextSummary.signals.vip) constraints.push("include one VIP campaign");
+
+  for (const playbook of contextSummary.playbooks) {
+    if (playbook.type === "flow") constraints.push(`consider ${playbook.name} flow playbook`);
+    if (playbook.type === "campaign") constraints.push(`consider ${playbook.name} campaign playbook`);
+  }
+
+  return Array.from(new Set(constraints));
+}
+
 async function callJsonRoute(handler: JsonPostHandler, path: string, payload: unknown) {
   const response = await handler(
     new Request(`${COMMAND_ORIGIN}${path}`, {
@@ -155,11 +322,14 @@ async function callJsonRoute(handler: JsonPostHandler, path: string, payload: un
   return { response, data };
 }
 
-async function routePlanBriefQa(message: string) {
+async function routePlanBriefQa(message: string, contextSummary: CommandContextSummary) {
   const { response, data } = await callJsonRoute(
     planBriefQaWorkflow,
     "/api/agent/workflows/plan-brief-qa",
-    { prompt: message },
+    {
+      prompt: message,
+      constraints: contextPlanningConstraints(contextSummary),
+    },
   );
 
   return commandResponse({
@@ -171,10 +341,11 @@ async function routePlanBriefQa(message: string) {
       ? "I created a Plan -> Brief -> QA workflow from your request."
       : "I could not create the Plan -> Brief -> QA workflow.",
     status: response.status,
+    contextSummary,
   });
 }
 
-async function routeApproveWorkflow(message: string, workflowId: string) {
+async function routeApproveWorkflow(message: string, workflowId: string, contextSummary: CommandContextSummary) {
   const { response, data } = await callJsonRoute(
     approveWorkflow,
     "/api/agent/commands/approve-workflow",
@@ -190,10 +361,11 @@ async function routeApproveWorkflow(message: string, workflowId: string) {
       ? "I routed your approval to draft creation for the eligible briefs. Nothing was scheduled or sent."
       : "I could not approve this workflow for draft creation.",
     status: response.status,
+    contextSummary,
   });
 }
 
-async function routeListWorkflows() {
+async function routeListWorkflows(contextSummary: CommandContextSummary) {
   const workflows = await prisma.workflowRun.findMany({
     orderBy: { createdAt: "desc" },
     take: DEFAULT_WORKFLOW_LIMIT,
@@ -209,10 +381,11 @@ async function routeListWorkflows() {
     message: workflows.length
       ? `Here are the ${workflows.length} most recent workflow runs.`
       : "There are no saved workflow runs yet.",
+    contextSummary,
   });
 }
 
-async function routeGetWorkflow(workflowId: string) {
+async function routeGetWorkflow(workflowId: string, contextSummary: CommandContextSummary) {
   const id = cleanWorkflowId(workflowId);
   if (!id) {
     return commandResponse({
@@ -220,6 +393,7 @@ async function routeGetWorkflow(workflowId: string) {
       tool: "workflow.get",
       result: { workflowId: null },
       message: "Which workflow should I open? Pass a workflowId.",
+      contextSummary,
     });
   }
 
@@ -235,6 +409,7 @@ async function routeGetWorkflow(workflowId: string) {
       result: { workflowId: id },
       message: "Workflow run not found.",
       status: 404,
+      contextSummary,
     });
   }
 
@@ -245,13 +420,15 @@ async function routeGetWorkflow(workflowId: string) {
       workflow: serializeWorkflowRun(workflow),
     },
     message: "Here is the saved workflow run.",
+    contextSummary,
   });
 }
 
-function routeListPlaybooks(message: string) {
+function routeListPlaybooks(message: string, contextSummary: CommandContextSummary, contextResult: AgentContextResult) {
   const requestedType = inferPlaybookType(message);
   const type = requestedType && isPlaybookType(requestedType) ? requestedType : undefined;
-  const playbooks = listPlaybooks(type);
+  const contextPlaybooks = contextResult.context.playbooks;
+  const playbooks = contextPlaybooks.length ? contextPlaybooks : listPlaybooks(type);
 
   return commandResponse({
     intent: "list_playbooks",
@@ -260,14 +437,16 @@ function routeListPlaybooks(message: string) {
       playbooks,
       count: playbooks.length,
       filters: type ? { type } : {},
+      source: contextPlaybooks.length ? "agent_context" : "registry",
     },
     message: type
       ? `Here are the registered ${type} playbooks.`
       : "Here are the registered Worklin playbooks.",
+    contextSummary,
   });
 }
 
-function routeClarify(message: string, workflowId?: string) {
+function routeClarify(message: string, contextSummary: CommandContextSummary, workflowId?: string) {
   if (detectsSendOrScheduleIntent(message)) {
     return commandResponse({
       intent: "clarify",
@@ -278,6 +457,7 @@ function routeClarify(message: string, workflowId?: string) {
       },
       message:
         "I cannot send or schedule campaigns from this command. Worklin is in draft-only mode; I can create Klaviyo drafts only after clear approval.",
+      contextSummary,
     });
   }
 
@@ -288,9 +468,11 @@ function routeClarify(message: string, workflowId?: string) {
       result: {
         reason: "missing_workflow_context",
         workflowId: null,
+        recentEligibleWorkflows: contextSummary.recentEligibleWorkflows,
       },
       message:
         "Which completed workflow should I approve? Pass a workflowId so I create drafts for the right briefs.",
+      contextSummary,
     });
   }
 
@@ -303,6 +485,7 @@ function routeClarify(message: string, workflowId?: string) {
         workflowId: null,
       },
       message: "Which workflow should I open? Pass a workflowId.",
+      contextSummary,
     });
   }
 
@@ -320,10 +503,14 @@ function routeClarify(message: string, workflowId?: string) {
     },
     message:
       "I am not sure which Worklin action you want. Try asking me to plan campaigns, approve a workflow, show recent workflows, open a workflow, or list playbooks.",
+    contextSummary,
   });
 }
 
 export async function POST(request: Request) {
+  let parsedMessage: string | null = null;
+  let parsedWorkflowId: string | undefined;
+
   try {
     const body = await request.json().catch(() => null);
     const parsed = commandSchema.safeParse(body);
@@ -344,16 +531,43 @@ export async function POST(request: Request) {
     }
 
     const { message, workflowId } = parsed.data;
-    const intent = inferIntent(message, workflowId);
+    parsedMessage = message;
+    parsedWorkflowId = workflowId;
 
-    if (intent === "plan_brief_qa") return routePlanBriefQa(message);
-    if (intent === "approve_workflow" && workflowId) return routeApproveWorkflow(message, workflowId);
-    if (intent === "list_workflows") return routeListWorkflows();
-    if (intent === "get_workflow" && workflowId) return routeGetWorkflow(workflowId);
-    if (intent === "list_playbooks") return routeListPlaybooks(message);
+    const contextResult = await buildAgentContext({
+      message,
+      workflowId,
+      limit: DEFAULT_WORKFLOW_LIMIT,
+    });
+    const contextSummary = compactContextSummary(contextResult);
+    const resolvedWorkflowId = contextSummary.referencedWorkflow?.id ?? workflowId;
+    const intent = inferIntent(message, resolvedWorkflowId);
 
-    return routeClarify(message, workflowId);
+    if (intent === "plan_brief_qa") return routePlanBriefQa(message, contextSummary);
+    if (intent === "approve_workflow" && resolvedWorkflowId) {
+      return routeApproveWorkflow(message, resolvedWorkflowId, contextSummary);
+    }
+    if (intent === "list_workflows") return routeListWorkflows(contextSummary);
+    if (intent === "get_workflow" && resolvedWorkflowId) return routeGetWorkflow(resolvedWorkflowId, contextSummary);
+    if (intent === "list_playbooks") return routeListPlaybooks(message, contextSummary, contextResult);
+
+    return routeClarify(message, contextSummary, resolvedWorkflowId);
   } catch (error) {
+    if (error instanceof Error && error.message === "WORKFLOW_NOT_FOUND") {
+      const intent = parsedMessage ? inferIntent(parsedMessage, parsedWorkflowId) : "get_workflow";
+
+      return commandResponse({
+        ok: false,
+        intent: intent === "approve_workflow" ? "approve_workflow" : "get_workflow",
+        tool: intent === "approve_workflow" ? "workflow.approveAndCreateDrafts" : "workflow.get",
+        result: {
+          workflowId: parsedWorkflowId ?? null,
+        },
+        message: "Workflow run not found.",
+        status: 404,
+      });
+    }
+
     console.error("POST /api/agent/command failed", error);
     return NextResponse.json(
       {
