@@ -8,10 +8,12 @@ import {
 } from "@/app/api/agent/workflows/shared";
 import { POST as planBriefQaWorkflow } from "@/app/api/agent/workflows/plan-brief-qa/route";
 import { buildAgentContext } from "@/lib/agent/context/build-context";
+import { parseAgentIntent } from "@/lib/agent/intent/parse-intent";
 import { getAgentToolByName } from "@/lib/agent/tools/registry";
 import { prisma } from "@/lib/prisma";
 import { isPlaybookType, listPlaybooks } from "@/lib/playbooks";
 import type { AgentContextResult } from "@/lib/agent/context/types";
+import type { IntentParameters } from "@/lib/agent/intent/types";
 import type { AgentToolDefinition } from "@/lib/agent/tools/types";
 import type { PlaybookType, WorklinPlaybook } from "@/lib/playbooks";
 
@@ -310,6 +312,10 @@ function contextPlanningConstraints(contextSummary: CommandContextSummary) {
   return Array.from(new Set(constraints));
 }
 
+function uniqueStrings(items: string[]) {
+  return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+}
+
 async function callJsonRoute(handler: JsonPostHandler, path: string, payload: unknown) {
   const response = await handler(
     new Request(`${COMMAND_ORIGIN}${path}`, {
@@ -322,13 +328,23 @@ async function callJsonRoute(handler: JsonPostHandler, path: string, payload: un
   return { response, data };
 }
 
-async function routePlanBriefQa(message: string, contextSummary: CommandContextSummary) {
+async function routePlanBriefQa(
+  message: string,
+  contextSummary: CommandContextSummary,
+  parameters: IntentParameters = {},
+) {
+  const constraints = uniqueStrings([
+    ...contextPlanningConstraints(contextSummary),
+    ...(parameters.constraints ?? []),
+  ]);
   const { response, data } = await callJsonRoute(
     planBriefQaWorkflow,
     "/api/agent/workflows/plan-brief-qa",
     {
       prompt: message,
-      constraints: contextPlanningConstraints(contextSummary),
+      constraints,
+      ...(parameters.campaignCount ? { campaignCount: parameters.campaignCount } : {}),
+      ...(parameters.focus ? { focus: parameters.focus } : {}),
     },
   );
 
@@ -424,8 +440,13 @@ async function routeGetWorkflow(workflowId: string, contextSummary: CommandConte
   });
 }
 
-function routeListPlaybooks(message: string, contextSummary: CommandContextSummary, contextResult: AgentContextResult) {
-  const requestedType = inferPlaybookType(message);
+function routeListPlaybooks(
+  message: string,
+  contextSummary: CommandContextSummary,
+  contextResult: AgentContextResult,
+  playbookType?: PlaybookType,
+) {
+  const requestedType = playbookType ?? inferPlaybookType(message);
   const type = requestedType && isPlaybookType(requestedType) ? requestedType : undefined;
   const contextPlaybooks = contextResult.context.playbooks;
   const playbooks = contextPlaybooks.length ? contextPlaybooks : listPlaybooks(type);
@@ -540,16 +561,32 @@ export async function POST(request: Request) {
       limit: DEFAULT_WORKFLOW_LIMIT,
     });
     const contextSummary = compactContextSummary(contextResult);
-    const resolvedWorkflowId = contextSummary.referencedWorkflow?.id ?? workflowId;
-    const intent = inferIntent(message, resolvedWorkflowId);
+    const parsedIntentResult = await parseAgentIntent({
+      message,
+      workflowId,
+      contextResult,
+    });
+    const parsedIntent = parsedIntentResult.intent;
+    const resolvedWorkflowId = parsedIntent.parameters.workflowId ?? contextSummary.referencedWorkflow?.id ?? workflowId;
+    const deterministicIntent = inferIntent(message, resolvedWorkflowId);
+    const intent =
+      parsedIntent.intent === "clarify" && deterministicIntent !== "clarify"
+        ? deterministicIntent
+        : parsedIntent.intent;
 
-    if (intent === "plan_brief_qa") return routePlanBriefQa(message, contextSummary);
+    if (parsedIntent.safety.sendOrScheduleRequested || detectsSendOrScheduleIntent(message)) {
+      return routeClarify(message, contextSummary, resolvedWorkflowId);
+    }
+
+    if (intent === "plan_brief_qa") return routePlanBriefQa(message, contextSummary, parsedIntent.parameters);
     if (intent === "approve_workflow" && resolvedWorkflowId) {
       return routeApproveWorkflow(message, resolvedWorkflowId, contextSummary);
     }
     if (intent === "list_workflows") return routeListWorkflows(contextSummary);
     if (intent === "get_workflow" && resolvedWorkflowId) return routeGetWorkflow(resolvedWorkflowId, contextSummary);
-    if (intent === "list_playbooks") return routeListPlaybooks(message, contextSummary, contextResult);
+    if (intent === "list_playbooks") {
+      return routeListPlaybooks(message, contextSummary, contextResult, parsedIntent.parameters.playbookType);
+    }
 
     return routeClarify(message, contextSummary, resolvedWorkflowId);
   } catch (error) {
