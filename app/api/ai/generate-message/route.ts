@@ -48,21 +48,35 @@ function buildFallbackVariants(input: z.infer<typeof payloadSchema>) {
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const parsed = payloadSchema.parse(body);
-    const prompt = `You are an expert e-commerce retention marketer. Generate a ${parsed.channel} message for a ${parsed.campaignType} campaign.
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON payload" }, { status: 400 });
+    }
+
+    const parsed = payloadSchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: "Invalid payload", details: parsed.error.flatten() },
+        { status: 400 },
+      );
+    }
+
+    const input = parsed.data;
+    const prompt = `You are an expert e-commerce retention marketer. Generate a ${input.channel} message for a ${input.campaignType} campaign.
 
 Customer context:
-- Name: ${parsed.customerContext.name ?? "Unknown"}
-- Segment: ${parsed.customerContext.segment ?? "Unknown"}
-- Last purchase: ${parsed.customerContext.lastPurchaseDate ?? "Unknown"} — ${parsed.customerContext.lastProduct ?? "Unknown"}
-- Total orders: ${parsed.customerContext.orderCount ?? 0}
-- Lifetime value: ${parsed.customerContext.clv ?? 0}
-- Browsing history: ${(parsed.customerContext.recentViews ?? []).join(", ") || "None"}
+- Name: ${input.customerContext.name ?? "Unknown"}
+- Segment: ${input.customerContext.segment ?? "Unknown"}
+- Last purchase: ${input.customerContext.lastPurchaseDate ?? "Unknown"} — ${input.customerContext.lastProduct ?? "Unknown"}
+- Total orders: ${input.customerContext.orderCount ?? 0}
+- Lifetime value: ${input.customerContext.clv ?? 0}
+- Browsing history: ${(input.customerContext.recentViews ?? []).join(", ") || "None"}
 
-Brand voice: ${parsed.brandVoice}
+Brand voice: ${input.brandVoice}
 
-Tone: ${parsed.tone}
+Tone: ${input.tone}
 
 Requirements:
 - For EMAIL: Generate subject line (max 50 chars), preview text (max 90 chars), and body (max 200 words)
@@ -83,7 +97,7 @@ For SMS variant objects should be: { "message": "..." }`;
     if (!groqClient) {
       return NextResponse.json(
         {
-          variants: buildFallbackVariants(parsed),
+          variants: buildFallbackVariants(input),
           source: "mock",
           note: "GROQ_API_KEY not set, returned mocked variants.",
         },
