@@ -1,0 +1,306 @@
+import type {
+  AgentToolCategory,
+  AgentToolDefinition,
+  AgentToolFilters,
+  AgentToolPermissionLevel,
+} from "@/lib/agent/tools/types";
+
+export const AGENT_TOOL_CATEGORIES: AgentToolCategory[] = [
+  "workflow",
+  "klaviyo",
+  "playbooks",
+  "memory",
+  "brain",
+];
+
+export const AGENT_TOOL_PERMISSION_LEVELS: AgentToolPermissionLevel[] = [
+  "read",
+  "generate",
+  "external_draft",
+  "external_live_action",
+];
+
+export const agentToolRegistry: AgentToolDefinition[] = [
+  {
+    name: "workflow.planBriefQa",
+    description:
+      "Generate a campaign plan, create briefs for the plan items, run QA for each brief, and persist the workflow run.",
+    category: "workflow",
+    inputSchema: {
+      type: "object",
+      description: "Natural-language workflow request with optional planning constraints.",
+      required: ["prompt"],
+      properties: {
+        prompt: {
+          type: "string",
+          description: "User request describing the campaign workflow to generate.",
+          required: true,
+        },
+        startDate: {
+          type: "string",
+          description: "Optional ISO-style date string for the plan start date.",
+        },
+        endDate: {
+          type: "string",
+          description: "Optional ISO-style date string for the plan end date.",
+        },
+        campaignCount: {
+          type: "number",
+          description: "Optional positive whole number of campaigns to recommend.",
+        },
+        focus: {
+          type: "string",
+          description: "Optional planning focus such as repeat purchase or winback.",
+        },
+        constraints: {
+          type: "array",
+          description: "Optional planning constraints.",
+          items: "string",
+        },
+      },
+    },
+    outputDescription:
+      "A saved workflow run containing one plan, generated briefs, QA results, summary, and recommended next action.",
+    permissionLevel: "generate",
+    requiresApproval: false,
+    riskLevel: "medium",
+    currentStatus: "available",
+    backingRoute: "POST /api/agent/workflows/plan-brief-qa",
+    handlerReference: "app/api/agent/workflows/plan-brief-qa/route.ts",
+    notes: ["Creates local database records only. Does not call Klaviyo."],
+  },
+  {
+    name: "workflow.approveAndCreateDrafts",
+    description:
+      "Interpret workflow approval intent and create Klaviyo drafts for eligible QA-passed briefs in that workflow.",
+    category: "workflow",
+    inputSchema: {
+      type: "object",
+      description: "Approval command with an optional workflow id.",
+      required: ["message"],
+      properties: {
+        message: {
+          type: "string",
+          description: "Approval phrase such as approved, looks good, go ahead, or ship the drafts.",
+          required: true,
+        },
+        workflowId: {
+          type: "string",
+          description: "WorkflowRun id. Required when approval context is otherwise ambiguous.",
+        },
+      },
+    },
+    outputDescription:
+      "Draft creation summary with draftsCreated, held, skipped, workflowId, and a safe user-facing message.",
+    permissionLevel: "external_draft",
+    requiresApproval: true,
+    riskLevel: "high",
+    currentStatus: "available",
+    backingRoute: "POST /api/agent/commands/approve-workflow",
+    handlerReference: "app/api/agent/commands/approve-workflow/route.ts",
+    notes: ["Draft-only. Refuses send or schedule intent."],
+  },
+  {
+    name: "klaviyo.createDraftFromBrief",
+    description: "Create a real Klaviyo HTML template and draft campaign from one Worklin CampaignBrief.",
+    category: "klaviyo",
+    inputSchema: {
+      type: "object",
+      description: "Brief id plus optional audience and content overrides.",
+      required: ["briefId"],
+      properties: {
+        briefId: {
+          type: "string",
+          description: "CampaignBrief id to render into Klaviyo draft objects.",
+          required: true,
+        },
+        audienceId: {
+          type: "string",
+          description: "Optional Klaviyo audience override. Defaults to configured test audience.",
+        },
+        overrideSubject: {
+          type: "string",
+          description: "Optional subject line override.",
+        },
+        overridePreviewText: {
+          type: "string",
+          description: "Optional preview text override.",
+        },
+        overrideFailedQa: {
+          type: "boolean",
+          description: "Explicitly override failed QA block when allowed by caller policy.",
+        },
+      },
+    },
+    outputDescription:
+      "Klaviyo draft identifiers, local KlaviyoDraft id, campaign name, and draft_created status.",
+    permissionLevel: "external_draft",
+    requiresApproval: true,
+    riskLevel: "high",
+    currentStatus: "available",
+    backingRoute: "POST /api/klaviyo/drafts/from-brief",
+    handlerReference: "app/api/klaviyo/drafts/from-brief/route.ts",
+    notes: ["Never schedules or sends. Requires server-side Klaviyo configuration."],
+  },
+  {
+    name: "playbooks.list",
+    description: "List registered Worklin campaign and lifecycle flow playbooks.",
+    category: "playbooks",
+    inputSchema: {
+      type: "object",
+      description: "Optional playbook type filter.",
+      properties: {
+        type: {
+          type: "string",
+          description: "Optional playbook type filter: flow or campaign.",
+        },
+      },
+    },
+    outputDescription: "Array of playbooks, optionally filtered by type.",
+    permissionLevel: "read",
+    requiresApproval: false,
+    riskLevel: "low",
+    currentStatus: "available",
+    backingRoute: "GET /api/playbooks",
+    handlerReference: "app/api/playbooks/route.ts",
+  },
+  {
+    name: "playbooks.get",
+    description: "Read one registered Worklin playbook by id.",
+    category: "playbooks",
+    inputSchema: {
+      type: "object",
+      description: "Playbook lookup by id.",
+      required: ["id"],
+      properties: {
+        id: {
+          type: "string",
+          description: "Playbook id, such as welcome_series or vip_early_access.",
+          required: true,
+        },
+      },
+    },
+    outputDescription: "One playbook definition or not-found result.",
+    permissionLevel: "read",
+    requiresApproval: false,
+    riskLevel: "low",
+    currentStatus: "available",
+    backingRoute: "GET /api/playbooks/[id]",
+    handlerReference: "app/api/playbooks/[id]/route.ts",
+  },
+  {
+    name: "memory.getCampaignInsights",
+    description: "Read aggregate insights from stored Campaign Memory records.",
+    category: "memory",
+    inputSchema: {
+      type: "object",
+      description: "No input required.",
+      properties: {},
+    },
+    outputDescription:
+      "Campaign memory summary including top segments, top campaign types, revenue, averages, and recent lessons.",
+    permissionLevel: "read",
+    requiresApproval: false,
+    riskLevel: "low",
+    currentStatus: "available",
+    backingRoute: "GET /api/memory/insights",
+    handlerReference: "app/api/memory/insights/route.ts",
+  },
+  {
+    name: "workflow.list",
+    description: "List saved Worklin agent workflow runs.",
+    category: "workflow",
+    inputSchema: {
+      type: "object",
+      description: "Optional workflow filters.",
+      properties: {
+        type: {
+          type: "string",
+          description: "Optional workflow type filter.",
+        },
+        status: {
+          type: "string",
+          description: "Optional workflow status filter.",
+        },
+        limit: {
+          type: "number",
+          description: "Optional positive whole number result limit.",
+        },
+      },
+    },
+    outputDescription: "Array of saved workflow run summaries.",
+    permissionLevel: "read",
+    requiresApproval: false,
+    riskLevel: "low",
+    currentStatus: "available",
+    backingRoute: "GET /api/agent/workflows",
+    handlerReference: "app/api/agent/workflows/route.ts",
+  },
+  {
+    name: "workflow.get",
+    description: "Read one saved Worklin agent workflow run by id.",
+    category: "workflow",
+    inputSchema: {
+      type: "object",
+      description: "Workflow lookup by id.",
+      required: ["id"],
+      properties: {
+        id: {
+          type: "string",
+          description: "WorkflowRun id.",
+          required: true,
+        },
+      },
+    },
+    outputDescription: "One saved workflow run including stored input, output, and error information.",
+    permissionLevel: "read",
+    requiresApproval: false,
+    riskLevel: "low",
+    currentStatus: "available",
+    backingRoute: "GET /api/agent/workflows/[id]",
+    handlerReference: "app/api/agent/workflows/[id]/route.ts",
+  },
+  {
+    name: "brain.readBrandContext",
+    description: "Read Worklin Brain brand profile, voice, rules, CTAs, phrases, and related brand context.",
+    category: "brain",
+    inputSchema: {
+      type: "object",
+      description: "No input required for the default store brand context.",
+      properties: {},
+    },
+    outputDescription: "Brand profile and associated Brain guidance used for planning, brief generation, and QA.",
+    permissionLevel: "read",
+    requiresApproval: false,
+    riskLevel: "low",
+    currentStatus: "available",
+    backingRoute: "GET /api/brain/profile",
+    handlerReference: "app/api/brain/profile/route.ts",
+  },
+];
+
+export function isAgentToolCategory(value: string): value is AgentToolCategory {
+  return AGENT_TOOL_CATEGORIES.includes(value as AgentToolCategory);
+}
+
+export function isAgentToolPermissionLevel(value: string): value is AgentToolPermissionLevel {
+  return AGENT_TOOL_PERMISSION_LEVELS.includes(value as AgentToolPermissionLevel);
+}
+
+export function getAgentToolByName(name: string) {
+  return agentToolRegistry.find((tool) => tool.name === name) ?? null;
+}
+
+export function listAgentTools(filters: AgentToolFilters = {}) {
+  return agentToolRegistry.filter((tool) => {
+    if (filters.category && tool.category !== filters.category) return false;
+    if (filters.permissionLevel && tool.permissionLevel !== filters.permissionLevel) return false;
+    if (
+      typeof filters.requiresApproval === "boolean" &&
+      tool.requiresApproval !== filters.requiresApproval
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
