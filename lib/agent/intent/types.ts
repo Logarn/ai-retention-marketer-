@@ -7,6 +7,7 @@ export const WORKLIN_INTENTS = [
   "list_workflows",
   "get_workflow",
   "list_playbooks",
+  "recommend_flows",
   "clarify",
 ] as const;
 

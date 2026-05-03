@@ -85,6 +85,17 @@ function detectListPlaybooks(message: string) {
   return /\b(playbook|playbooks)\b/i.test(message);
 }
 
+function detectRecommendFlows(message: string) {
+  return (
+    /\b(audit|diagnose|review|fix|improve|optimi[sz]e)\b.*\b(klaviyo\s+)?flows?\b/i.test(message) ||
+    /\b(what|which)\b.*\b(lifecycle\s+)?flows?\b.*\b(missing|build|next|need|have|recommend)\b/i.test(message) ||
+    /\b(lifecycle|automation|automations)\b.*\b(missing|build|next|need|have|recommend|audit|fix)\b/i.test(message) ||
+    /\b(recover|recovery)\b.*\b(abandoned?\s+checkouts?|checkout\s+abandon|abandoned?\s+carts?|cart\s+abandon)\b/i.test(message) ||
+    /\b(increase|grow|improve)\b.*\b(repeat\s+purchases?|reorders?|restock|replenishment)\b.*\b(flows?|automations?)\b/i.test(message) ||
+    /\bwhat\s+automations?\s+should\s+this\s+brand\s+have\b/i.test(message)
+  );
+}
+
 function detectPlan(message: string) {
   return (
     /\b(plan|prep|prepare|create|generate|build|make|put\s+together)\b.*\b(campaign|campaigns|retention|email|emails|flow|flows|lifecycle|something)\b/i.test(
@@ -180,11 +191,24 @@ export function deterministicParseIntent(message: string, workflowId?: string | 
     parameters.playbookType = inferPlaybookType(message);
     reasoningSummary = "The user asked to see Worklin playbooks.";
     clarificationQuestion = undefined;
-  } else if (extractedWorkflowId && detectGetWorkflow(message)) {
-    intent = "get_workflow";
-    confidence = 0.86;
-    reasoningSummary = "The user asked to open a specific workflow.";
+  } else if (detectRecommendFlows(message)) {
+    intent = "recommend_flows";
+    confidence = 0.9;
+    parameters.focus = inferFocus(message);
+    parameters.constraints = inferConstraints(message);
+    reasoningSummary = "The user is asking Worklin to recommend lifecycle flow work.";
     clarificationQuestion = undefined;
+  } else if (detectGetWorkflow(message)) {
+    if (extractedWorkflowId) {
+      intent = "get_workflow";
+      confidence = 0.86;
+      reasoningSummary = "The user asked to open a specific workflow.";
+      clarificationQuestion = undefined;
+    } else {
+      confidence = 0.82;
+      reasoningSummary = "The user asked to open a workflow but did not provide a workflow id.";
+      clarificationQuestion = "Which workflow should I open? Pass a workflowId.";
+    }
   } else if (detectListWorkflows(message)) {
     intent = "list_workflows";
     confidence = 0.88;
@@ -259,6 +283,7 @@ function buildLlmPrompt(message: string, workflowId: string | null | undefined, 
         "workflow.list",
         "workflow.get",
         "playbooks.list",
+        "flows.recommend",
       ].includes(tool.name),
     )
     .map((tool) => ({
@@ -273,9 +298,12 @@ function buildLlmPrompt(message: string, workflowId: string | null | undefined, 
 
 Rules:
 - You classify and structure only. Never execute tools.
-- Only use these intents: plan_brief_qa, approve_workflow, list_workflows, get_workflow, list_playbooks, clarify.
+- Only use these intents: plan_brief_qa, approve_workflow, list_workflows, get_workflow, list_playbooks, recommend_flows, clarify.
 - If the user asks to send, schedule, launch, or go live, use intent "clarify".
 - Approval may only mean draft creation after deterministic validation. Do not assume a workflow if none is provided.
+- Use "recommend_flows" for Klaviyo flow audits, missing lifecycle flows, automation recommendations, abandoned checkout/cart recovery flows, replenishment/repeat purchase flows, and questions about which automations the brand should have.
+- Do not use "recommend_flows" for saved Worklin workflow history requests like "show recent workflows" or "open this workflow".
+- Do not use "recommend_flows" for campaign planning requests like "plan 3 campaigns"; use "plan_brief_qa" for campaign/email planning.
 - External actions and approvals must set safety.requiresApproval true.
 - Keep reasoningSummary under 140 characters.
 - Return valid JSON only in the exact shape requested.
@@ -294,7 +322,7 @@ ${JSON.stringify(tools)}
 
 Return JSON:
 {
-  "intent": "plan_brief_qa | approve_workflow | list_workflows | get_workflow | list_playbooks | clarify",
+  "intent": "plan_brief_qa | approve_workflow | list_workflows | get_workflow | list_playbooks | recommend_flows | clarify",
   "confidence": 0,
   "parameters": {
     "campaignCount": 0,
@@ -329,18 +357,19 @@ function sanitizeLlmIntent(output: unknown, message: string, workflowId?: string
   const playbookType = asPlaybookType(rawParameters.playbookType);
   if (playbookType) parameters.playbookType = playbookType;
 
+  const detectedSendOrSchedule = detectSendOrSchedule(message);
   const sendOrScheduleRequested =
     typeof rawSafety.sendOrScheduleRequested === "boolean"
-      ? rawSafety.sendOrScheduleRequested
-      : detectSendOrSchedule(message);
+      ? rawSafety.sendOrScheduleRequested || detectedSendOrSchedule
+      : detectedSendOrSchedule;
   const approvalRequested = detectApproval(message) || output.intent === "approve_workflow";
   const externalActionRequested =
     typeof rawSafety.externalActionRequested === "boolean"
-      ? rawSafety.externalActionRequested
+      ? rawSafety.externalActionRequested || sendOrScheduleRequested || approvalRequested
       : sendOrScheduleRequested || approvalRequested;
   const requiresApproval =
     typeof rawSafety.requiresApproval === "boolean"
-      ? rawSafety.requiresApproval
+      ? rawSafety.requiresApproval || sendOrScheduleRequested || approvalRequested || externalActionRequested
       : sendOrScheduleRequested || approvalRequested || externalActionRequested;
 
   const forcedClarify = sendOrScheduleRequested;
