@@ -223,6 +223,7 @@ model CampaignBrief {
   updatedAt      DateTime               @updatedAt
   sections       CampaignBriefSection[]
   qaChecks       BriefQaCheck[]
+  klaviyoDrafts  KlaviyoDraft[]
 
   @@index([planItemId])
   @@index([status, createdAt])
@@ -261,6 +262,25 @@ model BriefQaCheck {
 
   @@index([briefId, createdAt])
   @@index([status, createdAt])
+}
+
+model KlaviyoDraft {
+  id                 String        @id @default(cuid())
+  briefId            String
+  brief              CampaignBrief @relation(fields: [briefId], references: [id], onDelete: Cascade)
+  klaviyoCampaignId  String
+  klaviyoTemplateId  String
+  klaviyoMessageId   String?
+  campaignName       String
+  status             String        @default("draft_created")
+  response           Json?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  @@index([briefId, createdAt])
+  @@index([status, createdAt])
+  @@index([klaviyoCampaignId])
+  @@index([klaviyoTemplateId])
 }
 
 model WorkflowRun {
