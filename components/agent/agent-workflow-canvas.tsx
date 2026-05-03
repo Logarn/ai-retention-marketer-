@@ -304,6 +304,11 @@ export function AgentWorkflowCanvas() {
     void loadRuns();
   }, [loadRuns]);
 
+  useEffect(() => {
+    const workflowId = new URLSearchParams(window.location.search).get("workflowId");
+    if (workflowId) void loadWorkflow(workflowId);
+  }, [loadWorkflow]);
+
   async function runWorkflow(event?: React.FormEvent | React.MouseEvent) {
     event?.preventDefault();
     const trimmedPrompt = prompt.trim();
