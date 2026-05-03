@@ -59,7 +59,7 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
         }`}
       >
         <aside
-          className={`sticky top-6 h-fit rounded-2xl border border-white/10 bg-gradient-to-b from-[#121a28]/95 to-[#0d131f]/95 shadow-[0_20px_70px_rgba(2,6,23,0.55)] backdrop-blur-xl ${
+          className={`h-fit rounded-2xl border border-white/10 bg-gradient-to-b from-[#121a28]/95 to-[#0d131f]/95 shadow-[0_20px_70px_rgba(2,6,23,0.55)] backdrop-blur-xl md:sticky md:top-6 ${
             fullBleed ? "m-4 p-4 md:m-6" : "p-4"
           }`}
         >

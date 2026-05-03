@@ -280,6 +280,12 @@ function AgentChatPanel({
           >
             My Brain
           </Link>
+          <Link
+            href="/agent/workflows"
+            className="inline-flex h-9 items-center rounded-lg border border-orange-300/25 bg-orange-300/10 px-3 text-xs font-semibold text-orange-100 hover:bg-orange-300/15"
+          >
+            Workflow Canvas
+          </Link>
           <Button
             type="button"
             variant="outline"
