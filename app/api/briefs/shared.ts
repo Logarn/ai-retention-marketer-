@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { getPlaybookById, type CampaignPlaybook, type FlowPlaybook, type WorklinPlaybook } from "@/lib/playbooks";
 
 const MAX_BRIEF_LIMIT = 100;
 const DEFAULT_BRIEF_LIMIT = 50;
@@ -117,6 +118,7 @@ type BriefSource = {
   ctaOverride: string | null;
   designNotesOverride: string | null;
   metadata: Record<string, unknown> | null;
+  playbook: WorklinPlaybook | null;
 };
 
 type GeneratedBriefSection = {
@@ -156,6 +158,32 @@ function cleanOptionalText(value: string | null | undefined) {
 
 function hasOwn(input: object, key: string) {
   return Object.prototype.hasOwnProperty.call(input, key);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function metadataRecord(value: Prisma.JsonValue | Record<string, unknown> | null | undefined) {
+  return isRecord(value) ? { ...value } : null;
+}
+
+function mergeBriefMetadata(
+  payloadMetadata: Record<string, unknown> | null,
+  planItemMetadata: Prisma.JsonValue | null | undefined,
+) {
+  const merged = {
+    ...(metadataRecord(planItemMetadata) ?? {}),
+    ...(payloadMetadata ?? {}),
+  };
+
+  return Object.keys(merged).length ? merged : null;
+}
+
+function resolvePlaybookFromMetadata(metadata: Record<string, unknown> | null) {
+  const playbookId = metadata?.playbookId;
+  if (typeof playbookId !== "string" || !playbookId.trim()) return null;
+  return getPlaybookById(playbookId);
 }
 
 function issueMessages(error: z.ZodError) {
@@ -397,6 +425,8 @@ export function buildBriefSource(
   payload: BriefGeneratePayload,
   planItem: PlanItemSource | null,
 ): BriefSource {
+  const metadata = mergeBriefMetadata(payload.metadata, planItem?.metadata);
+
   return {
     planItemId: payload.planItemId,
     title: payload.title ?? planItem?.title ?? "Campaign brief",
@@ -410,7 +440,8 @@ export function buildBriefSource(
     angleOverride: payload.angle,
     ctaOverride: payload.cta,
     designNotesOverride: payload.designNotes,
-    metadata: payload.metadata,
+    metadata,
+    playbook: resolvePlaybookFromMetadata(metadata),
   };
 }
 
@@ -438,7 +469,147 @@ function defaultCta(campaignType: string) {
   return "Shop now";
 }
 
+function compactPlaybookMetadata(playbook: WorklinPlaybook | null) {
+  if (!playbook) return null;
+
+  const base = {
+    id: playbook.id,
+    name: playbook.name,
+    type: playbook.type,
+    permissionLevel: playbook.permissionLevel,
+    keyMetric: playbook.keyMetric,
+    objective: playbook.objective,
+    targetAudience: playbook.targetAudience,
+    contentSuggestions: playbook.contentSuggestions,
+    offerRules: playbook.offerRules,
+    qaRisks: playbook.qaRisks,
+  };
+
+  if (playbook.type === "campaign") {
+    return {
+      ...base,
+      campaignType: playbook.campaignType,
+    };
+  }
+
+  return {
+    ...base,
+    trigger: playbook.trigger,
+    timing: playbook.timing,
+    sequence: playbook.sequence.map((step) => ({
+      step: step.step,
+      name: step.name,
+      timing: step.timing,
+      objective: step.objective,
+      contentAngle: step.contentAngle,
+    })),
+  };
+}
+
+function joinGuidance(items: string[], limit = 3) {
+  return items.slice(0, limit).join(" ");
+}
+
+function metadataHasNoDiscount(value: unknown, depth = 0): boolean {
+  if (!value || depth > 8) return false;
+
+  if (typeof value === "string") {
+    return /\b(no|without|avoid)\b.*\b(discounts?|coupons?|promo\s+codes?|sales?|markdowns?|bogo|deals?)\b/i.test(
+      value,
+    );
+  }
+
+  if (Array.isArray(value)) return value.some((item) => metadataHasNoDiscount(item, depth + 1));
+
+  if (isRecord(value)) {
+    return Object.entries(value).some(([key, nestedValue]) => {
+      const normalizedKey = key.toLowerCase().replace(/[_-]/g, "");
+      if (normalizedKey === "nodiscount") {
+        return (
+          nestedValue === true ||
+          (typeof nestedValue === "string" && /^(true|yes|1|no discounts?)$/i.test(nestedValue.trim())) ||
+          metadataHasNoDiscount(nestedValue, depth + 1)
+        );
+      }
+      return metadataHasNoDiscount(nestedValue, depth + 1);
+    });
+  }
+
+  return false;
+}
+
+function sourceHasNoDiscount(source: BriefSource) {
+  return source.playbook?.id === "no_discount_education" || metadataHasNoDiscount(source.metadata);
+}
+
+function sanitizeNoDiscountLanguage(text: string, enabled: boolean) {
+  if (!enabled) return text;
+
+  return text
+    .replace(
+      /\bno discount,\s*coupon,\s*bogo,\s*sale,\s*or markdown language\./gi,
+      "Avoid price-incentive framing, codes, bundle incentives, pricing events, and price cuts.",
+    )
+    .replace(/\bno[-\s]?discounts?\b/gi, "value-led")
+    .replace(/\bdiscounting\b/gi, "price-led framing")
+    .replace(/\bdiscounts?\b/gi, "price incentives")
+    .replace(/\bpromo\s+codes?\b/gi, "incentive codes")
+    .replace(/\bcoupons?\b/gi, "codes")
+    .replace(/\bbogo\b/gi, "bundle incentive")
+    .replace(/\bbuy\s+one\b.*?\bget\s+one\b/gi, "bundle incentive")
+    .replace(/\b\d{1,2}%\s*off\b/gi, "percentage incentive")
+    .replace(/\$\d+\s*off\b/gi, "dollar incentive")
+    .replace(/\bsale\b/gi, "pricing event")
+    .replace(/\bmarkdowns?\b/gi, "price cuts")
+    .replace(/\bclearance\b/gi, "end-of-season pricing")
+    .replace(/\bdeals?\b/gi, "incentives");
+}
+
+function playbookNameForBrief(source: BriefSource, playbook: WorklinPlaybook) {
+  const name = sanitizeNoDiscountLanguage(playbook.name, sourceHasNoDiscount(source));
+  return name ? name.charAt(0).toUpperCase() + name.slice(1) : playbook.name;
+}
+
+function playbookText(source: BriefSource, text: string) {
+  return sanitizeNoDiscountLanguage(text, sourceHasNoDiscount(source));
+}
+
+function playbookGuidance(source: BriefSource, items: string[], limit = 3) {
+  return playbookText(source, joinGuidance(items, limit));
+}
+
+function playbookMeta(playbook: WorklinPlaybook) {
+  return {
+    playbookId: playbook.id,
+    playbookName: playbook.name,
+    playbookType: playbook.type,
+  };
+}
+
+function flowSequenceSummary(playbook: FlowPlaybook) {
+  return playbook.sequence
+    .slice(0, 4)
+    .map((step) => `Step ${step.step} (${step.timing}): ${step.name} should ${step.objective.toLowerCase()} via ${step.contentAngle.toLowerCase()}`)
+    .join(" ");
+}
+
 function buildSubjectLines(source: BriefSource, context: BriefContext) {
+  if (source.playbook) {
+    const product = productPhrase(source.primaryProduct);
+    const brand = context.brand.brandName;
+    const playbook = source.playbook;
+    const playbookName = playbookNameForBrief(source, playbook);
+    const subjectLines = [
+      source.subjectLineAngle ?? `${playbookName}: ${source.title}`,
+      source.primaryProduct
+        ? `${product} for ${compactSegment(source.segment)}`
+        : playbookText(source, playbook.contentSuggestions[0] ?? playbook.objective),
+      brand ? `${brand}: ${playbookName}` : playbookText(source, playbook.objective),
+    ];
+
+    return Array.from(new Set(subjectLines.map((line) => line.trim()).filter(Boolean))).slice(0, 4);
+  }
+
   const product = productPhrase(source.primaryProduct);
   const brand = context.brand.brandName;
   const angle = source.subjectLineAngle;
@@ -452,6 +623,20 @@ function buildSubjectLines(source: BriefSource, context: BriefContext) {
 }
 
 function buildPreviewTexts(source: BriefSource, context: BriefContext) {
+  if (source.playbook) {
+    const product = productPhrase(source.primaryProduct);
+    const playbookName = playbookNameForBrief(source, source.playbook);
+    const previews = [
+      playbookText(source, source.playbook.objective),
+      source.primaryProduct
+        ? `A ${playbookName} brief for ${product}, built for ${compactSegment(source.segment)}.`
+        : `A ${playbookName} brief built for ${compactSegment(source.segment)}.`,
+      context.memory.recentLesson ? `Built with recent Campaign Memory lessons in mind.` : null,
+    ];
+
+    return previews.filter((preview): preview is string => Boolean(preview)).slice(0, 3);
+  }
+
   const product = productPhrase(source.primaryProduct);
   const previews = [
     source.goal,
@@ -474,7 +659,14 @@ function buildAngle(source: BriefSource, context: BriefContext) {
       ? "Campaign Memory suggests this campaign type has performed well before."
       : context.memory.recentLesson
         ? `Campaign Memory lesson to keep in mind: ${context.memory.recentLesson}`
-        : "Use this send as a clean learning moment for future planning.";
+      : "Use this send as a clean learning moment for future planning.";
+
+  if (source.playbook) {
+    const playbookName = playbookNameForBrief(source, source.playbook);
+    const objective = playbookText(source, source.playbook.objective);
+    const guidance = playbookGuidance(source, source.playbook.contentSuggestions);
+    return `${source.title} should follow the ${playbookName} playbook: ${objective} Frame ${product} around ${source.goal.toLowerCase()} Guidance to apply: ${guidance} ${memoryLine}`;
+  }
 
   return `${source.title} should frame ${product} through the lens of ${source.goal.toLowerCase()} ${memoryLine}`;
 }
@@ -486,10 +678,171 @@ function buildDesignNotes(source: BriefSource, context: BriefContext) {
     source.primaryProduct ? `Make ${source.primaryProduct} visually identifiable near the top of the email.` : "",
     context.brand.rules.length ? "Respect the active Brain rules and avoid off-brand claims or phrasing." : "",
   ];
+
+  if (source.playbook) {
+    notes.push(`Apply the ${playbookNameForBrief(source, source.playbook)} playbook: ${playbookGuidance(source, source.playbook.contentSuggestions)}`);
+    notes.push(`Offer guardrails: ${playbookGuidance(source, source.playbook.offerRules, 2)}`);
+    notes.push(`QA watchouts: ${playbookGuidance(source, source.playbook.qaRisks, 3)}`);
+    if (source.playbook.type === "flow") {
+      notes.push(`Flow timing: ${source.playbook.timing.join(" -> ")}`);
+    }
+  }
+
   return notes.filter(Boolean).join(" ");
 }
 
+function buildCampaignPlaybookSections(
+  source: BriefSource,
+  context: BriefContext,
+  cta: string,
+  designNotes: string,
+  playbook: CampaignPlaybook,
+) {
+  const product = productPhrase(source.primaryProduct);
+  const proof =
+    context.memory.recentLesson ??
+    (context.memory.bestSegment
+      ? `Campaign Memory currently has useful signal for ${context.memory.bestSegment}.`
+      : "Use customer benefit proof, product specifics, and light social proof.");
+  const brandLine = context.brand.usp ?? context.brand.tagline ?? context.brand.voiceDescription;
+  const whyLine = source.why ? `Planner rationale: ${source.why}` : "Planner rationale: manual brief input.";
+  const metadata = playbookMeta(playbook);
+  const playbookName = playbookNameForBrief(source, playbook);
+  const contentGuidance = playbookGuidance(source, playbook.contentSuggestions, 4);
+  const offerGuidance = playbookGuidance(source, playbook.offerRules, 3);
+  const riskGuidance = playbookGuidance(source, playbook.qaRisks, 3);
+  const objective = playbookText(source, playbook.objective);
+  const targetAudience = playbookText(source, playbook.targetAudience);
+
+  return [
+    {
+      type: "hero",
+      heading: source.title,
+      body: `Lead with the ${playbookName} direction: ${contentGuidance} Tie the opening message directly to ${source.goal.toLowerCase()}`,
+      sortOrder: 10,
+      metadata: { role: "above_the_fold", ...metadata },
+    },
+    {
+      type: "intro_story",
+      heading: "Why this matters now",
+      body: `${whyLine} This playbook is built to ${objective.toLowerCase()} for ${targetAudience.toLowerCase()} Keep the story specific to the audience need rather than a generic promotion.`,
+      sortOrder: 20,
+      metadata: { source: source.planItemId ? "planner" : "manual", ...metadata },
+    },
+    {
+      type: "product_callout",
+      heading: source.primaryProduct ? source.primaryProduct : "Featured focus",
+      body: source.primaryProduct
+        ? `Position ${product} through the ${playbookName} lens. Use the most relevant benefit, proof point, use case, and product clarity before asking for the click.`
+        : `Use this block for the main product, collection, story, or offer once creative has the final asset direction. Follow ${playbookName} guidance: ${contentGuidance}`,
+      sortOrder: 30,
+      metadata: { primaryProduct: source.primaryProduct, ...metadata },
+    },
+    {
+      type: "education_proof",
+      heading: "Education and proof",
+      body: `${brandLine ? `${brandLine} ` : ""}${proof} Use the playbook's proof direction: ${contentGuidance} Give the reader one useful takeaway and one reason to trust the recommendation.`,
+      sortOrder: 40,
+      metadata: { memoryCampaigns: context.memory.totalCampaigns, ...metadata },
+    },
+    {
+      type: "cta",
+      heading: cta,
+      body: `Use one primary CTA: "${cta}". Keep secondary links minimal so clicks concentrate around the campaign goal. Offer guidance: ${offerGuidance}`,
+      sortOrder: 50,
+      metadata: { cta, ...metadata },
+    },
+    {
+      type: "design_notes",
+      heading: "Design notes",
+      body: `${designNotes} QA risks to avoid: ${riskGuidance}`,
+      sortOrder: 60,
+      metadata: { preferredLength: context.brand.preferredLength, ...metadata },
+    },
+  ];
+}
+
+function buildFlowPlaybookSections(
+  source: BriefSource,
+  context: BriefContext,
+  cta: string,
+  designNotes: string,
+  playbook: FlowPlaybook,
+) {
+  const product = productPhrase(source.primaryProduct);
+  const proof =
+    context.memory.recentLesson ??
+    (context.memory.bestSegment
+      ? `Campaign Memory currently has useful signal for ${context.memory.bestSegment}.`
+      : "Use customer benefit proof, product specifics, and light social proof.");
+  const brandLine = context.brand.usp ?? context.brand.tagline ?? context.brand.voiceDescription;
+  const whyLine = source.why ? `Planner rationale: ${source.why}` : "Planner rationale: manual brief input.";
+  const metadata = playbookMeta(playbook);
+  const playbookName = playbookNameForBrief(source, playbook);
+  const sequence = playbookText(source, flowSequenceSummary(playbook));
+  const contentGuidance = playbookGuidance(source, playbook.contentSuggestions, 4);
+  const offerGuidance = playbookGuidance(source, playbook.offerRules, 3);
+  const riskGuidance = playbookGuidance(source, playbook.qaRisks, 3);
+  const objective = playbookText(source, playbook.objective);
+  const trigger = playbookText(source, playbook.trigger);
+
+  return [
+    {
+      type: "hero",
+      heading: source.title,
+      body: `Frame this as a ${playbookName} brief for ${compactSegment(source.segment)}. Trigger context: ${trigger} Lead with ${contentGuidance}`,
+      sortOrder: 10,
+      metadata: { role: "above_the_fold", ...metadata },
+    },
+    {
+      type: "intro_story",
+      heading: "Why this matters now",
+      body: `${whyLine} This flow playbook is built to ${objective.toLowerCase()} Sequence direction: ${sequence}`,
+      sortOrder: 20,
+      metadata: { source: source.planItemId ? "planner" : "manual", ...metadata },
+    },
+    {
+      type: "product_callout",
+      heading: source.primaryProduct ? source.primaryProduct : "Flow content focus",
+      body: source.primaryProduct
+        ? `Use ${product} only where it fits the step objective. Keep each message aligned to the flow sequence and timing instead of forcing one campaign-style pitch.`
+        : `Use this block to define the product, collection, education, or proof needed across the flow sequence.`,
+      sortOrder: 30,
+      metadata: { primaryProduct: source.primaryProduct, ...metadata },
+    },
+    {
+      type: "education_proof",
+      heading: "Education and proof",
+      body: `${brandLine ? `${brandLine} ` : ""}${proof} Add proof and education according to the flow sequence: ${contentGuidance}`,
+      sortOrder: 40,
+      metadata: { memoryCampaigns: context.memory.totalCampaigns, ...metadata },
+    },
+    {
+      type: "cta",
+      heading: cta,
+      body: `Use one primary CTA per message step, starting with "${cta}" when it matches the step objective. Offer guidance: ${offerGuidance}`,
+      sortOrder: 50,
+      metadata: { cta, ...metadata },
+    },
+    {
+      type: "design_notes",
+      heading: "Design notes",
+      body: `${designNotes} Sequence timing to respect: ${playbook.timing.join(" -> ")} QA risks to avoid: ${riskGuidance}`,
+      sortOrder: 60,
+      metadata: { preferredLength: context.brand.preferredLength, ...metadata },
+    },
+  ];
+}
+
 function buildSections(source: BriefSource, context: BriefContext, cta: string, designNotes: string) {
+  if (source.playbook?.type === "campaign") {
+    return buildCampaignPlaybookSections(source, context, cta, designNotes, source.playbook);
+  }
+
+  if (source.playbook?.type === "flow") {
+    return buildFlowPlaybookSections(source, context, cta, designNotes, source.playbook);
+  }
+
   const product = productPhrase(source.primaryProduct);
   const proof =
     context.memory.recentLesson ??
@@ -573,6 +926,7 @@ export function generateBriefArtifact(source: BriefSource, context: BriefContext
       planItemId: source.planItemId,
       confidenceScore: source.confidenceScore,
       inputMetadata: source.metadata,
+      playbook: compactPlaybookMetadata(source.playbook),
       context: {
         brandName: context.brand.brandName,
         brainRuleCount: context.brand.rules.length,
