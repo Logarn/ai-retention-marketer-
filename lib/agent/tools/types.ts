@@ -1,5 +1,6 @@
 export type AgentToolCategory =
   | "workflow"
+  | "flows"
   | "klaviyo"
   | "playbooks"
   | "memory"
