@@ -6,7 +6,11 @@ export { campaignPlaybooks } from "@/lib/playbooks/campaigns";
 export { flowPlaybooks } from "@/lib/playbooks/flows";
 export type {
   CampaignPlaybook,
+  FlowPlannerMatch,
   FlowPlaybook,
+  FlowPlaybookCategory,
+  FlowPlaybookDetailLevel,
+  FlowPlaybookPriorityDefault,
   FlowSequenceStep,
   PermissionLevel,
   PlaybookType,
