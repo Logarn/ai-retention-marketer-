@@ -10,7 +10,7 @@ import { createGroq } from "@ai-sdk/groq";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { DEFAULT_STORE_ID } from "@/app/api/brain/profile/store";
-import { worklinTools } from "@/lib/agent/tools";
+import { worklinTools } from "@/lib/agent/runtime-tools";
 import { OPERATIONAL_INSTRUCTIONS } from "@/lib/agent/operational-instructions";
 import { buildAgentSystemPrompt, extractEssentialSoulSections } from "@/lib/agent/soul-compact";
 import type { ToolSet, UIMessage } from "ai";
