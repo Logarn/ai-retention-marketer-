@@ -1,11 +1,6 @@
 import type { KlaviyoFlow } from "@/lib/klaviyo-flows";
-import { flowPlaybooks } from "@/lib/playbooks/flows";
+import { flowPlaybooks, isCoreRequiredFlowPlaybook } from "@/lib/playbooks/flows";
 import type { FlowPlaybook } from "@/lib/playbooks/types";
-
-type DetectionRule = {
-  playbookId: string;
-  patterns: Array<{ pattern: RegExp; reason: string; weight: number }>;
-};
 
 export type DetectedFlow = {
   flow: KlaviyoFlow;
@@ -13,6 +8,9 @@ export type DetectedFlow = {
     id: string;
     name: string;
     type: "flow";
+    category: FlowPlaybook["category"];
+    detailLevel: FlowPlaybook["detailLevel"];
+    priorityDefault: FlowPlaybook["priorityDefault"];
     keyMetric: string;
     permissionLevel: FlowPlaybook["permissionLevel"];
   };
@@ -25,6 +23,9 @@ export type DetectedFlow = {
 export type MissingCoreFlow = {
   playbookId: string;
   playbookName: string;
+  category: FlowPlaybook["category"];
+  detailLevel: FlowPlaybook["detailLevel"];
+  priorityDefault: FlowPlaybook["priorityDefault"];
   keyMetric: string;
   reason: string;
 };
@@ -52,60 +53,10 @@ export type FlowDetectionResult = {
     draftOrInactiveCount: number;
     coveredPlaybooks: string[];
     missingPlaybooks: string[];
+    detectedByCategory: Record<FlowPlaybook["category"], number>;
+    missingCorePlaybooks: string[];
   };
 };
-
-const DETECTION_RULES: DetectionRule[] = [
-  {
-    playbookId: "welcome_series",
-    patterns: [
-      { pattern: /\bwelcome\b/i, reason: "Name or definition mentions welcome.", weight: 0.7 },
-      { pattern: /\b(subscriber|subscribe|signup|sign up|joins? list|newsletter)\b/i, reason: "Trigger resembles a subscriber/list join.", weight: 0.35 },
-    ],
-  },
-  {
-    playbookId: "site_abandon",
-    patterns: [
-      { pattern: /\bsite abandon(?:ment)?\b/i, reason: "Name or definition mentions site abandon.", weight: 0.75 },
-      { pattern: /\b(active on site|site visit|visited site|visits? website)\b/i, reason: "Trigger resembles a site visit.", weight: 0.45 },
-    ],
-  },
-  {
-    playbookId: "browse_abandon",
-    patterns: [
-      { pattern: /\bbrowse abandon(?:ment)?\b/i, reason: "Name or definition mentions browse abandon.", weight: 0.75 },
-      { pattern: /\b(viewed product|product viewed|viewed collection|browse)\b/i, reason: "Trigger resembles product or collection browsing.", weight: 0.45 },
-    ],
-  },
-  {
-    playbookId: "cart_abandon",
-    patterns: [
-      { pattern: /\bcart abandon(?:ment)?\b/i, reason: "Name or definition mentions cart abandon.", weight: 0.75 },
-      { pattern: /\b(added to cart|add to cart|cart reminder|started cart)\b/i, reason: "Trigger resembles add-to-cart behavior.", weight: 0.45 },
-    ],
-  },
-  {
-    playbookId: "checkout_abandon",
-    patterns: [
-      { pattern: /\bcheckout abandon(?:ment)?\b/i, reason: "Name or definition mentions checkout abandon.", weight: 0.8 },
-      { pattern: /\b(started checkout|checkout started|checkout reminder)\b/i, reason: "Trigger resembles checkout start behavior.", weight: 0.5 },
-    ],
-  },
-  {
-    playbookId: "replenishment",
-    patterns: [
-      { pattern: /\breplenish(?:ment)?\b/i, reason: "Name or definition mentions replenishment.", weight: 0.8 },
-      { pattern: /\b(restock|reorder|refill|running low|repeat purchase)\b/i, reason: "Flow resembles a restock or reorder lifecycle.", weight: 0.45 },
-    ],
-  },
-  {
-    playbookId: "winback",
-    patterns: [
-      { pattern: /\bwin\s?back\b/i, reason: "Name or definition mentions winback.", weight: 0.8 },
-      { pattern: /\b(lapsed|reactivat|at risk|churn|sunset|wake up)\b/i, reason: "Flow resembles lapsed or reactivation lifecycle.", weight: 0.45 },
-    ],
-  },
-];
 
 function normalize(value: string) {
   return value.toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
@@ -143,43 +94,62 @@ function inactiveAuditPriority(flow: KlaviyoFlow): DraftOrInactiveFlow["auditPri
   return flow.archived ? "archived" : "inactive";
 }
 
-function playbookById(id: string) {
-  return flowPlaybooks.find((playbook) => playbook.id === id) ?? null;
+function escapedRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function includesPhrase(normalizedText: string, phrase: string) {
+  const normalizedPhrase = normalize(phrase);
+  if (!normalizedPhrase) return false;
+  return new RegExp(`\\b${escapedRegExp(normalizedPhrase).replace(/\s+/g, "\\s+")}\\b`).test(normalizedText);
+}
+
+function minimumConfidence(playbook: FlowPlaybook) {
+  if (playbook.detailLevel === "placeholder") return 0.7;
+  if (playbook.category === "infrastructure") return 0.62;
+  if (playbook.category === "conditional" || playbook.category === "secondary") return 0.52;
+  return 0.35;
+}
+
+function scorePlaybook(playbook: FlowPlaybook, text: string) {
+  const normalizedText = normalize(text);
+  const reasons: string[] = [];
+  let score = 0;
+
+  if (includesPhrase(normalizedText, playbook.name) || includesPhrase(normalizedText, playbook.id)) {
+    score += playbook.category === "core" ? 0.75 : 0.68;
+    reasons.push(`Matched Worklin playbook name "${playbook.name}".`);
+  }
+
+  for (const alias of playbook.plannerMatch.aliases) {
+    if (!includesPhrase(normalizedText, alias)) continue;
+    const weight = normalize(alias).includes(" ") ? 0.62 : 0.48;
+    score += weight;
+    reasons.push(`Matched flow alias "${alias}" for ${playbook.name}.`);
+  }
+
+  let triggerKeywordScore = 0;
+  for (const keyword of playbook.plannerMatch.triggerKeywords ?? []) {
+    if (!includesPhrase(normalizedText, keyword)) continue;
+    triggerKeywordScore += 0.18;
+    reasons.push(`Trigger or definition includes "${keyword}".`);
+  }
+
+  score += Math.min(triggerKeywordScore, 0.36);
+
+  return {
+    playbook,
+    score: Math.min(score, 1),
+    reasons: Array.from(new Set(reasons)),
+  };
 }
 
 function scoreFlow(flow: KlaviyoFlow) {
   const text = flowSearchText(flow);
-  const candidates = DETECTION_RULES.map((rule) => {
-    const playbook = playbookById(rule.playbookId);
-    if (!playbook) return null;
-
-    const reasons: string[] = [];
-    let score = 0;
-    const normalizedName = normalize(playbook.name);
-    const normalizedId = normalize(playbook.id);
-    const normalizedText = normalize(text);
-
-    if (normalizedText.includes(normalizedName) || normalizedText.includes(normalizedId)) {
-      score += 0.75;
-      reasons.push(`Matched Worklin playbook name "${playbook.name}".`);
-    }
-
-    for (const matcher of rule.patterns) {
-      if (matcher.pattern.test(text)) {
-        score += matcher.weight;
-        reasons.push(matcher.reason);
-      }
-    }
-
-    return {
-      playbook,
-      score: Math.min(score, 1),
-      reasons,
-    };
-  }).filter((candidate): candidate is { playbook: FlowPlaybook; score: number; reasons: string[] } => Boolean(candidate));
+  const candidates = flowPlaybooks.map((playbook) => scorePlaybook(playbook, text));
 
   const best = candidates.sort((a, b) => b.score - a.score)[0] ?? null;
-  if (!best || best.score < 0.35) return null;
+  if (!best || best.score < minimumConfidence(best.playbook)) return null;
   return best;
 }
 
@@ -200,6 +170,9 @@ export function detectExistingFlows(flows: KlaviyoFlow[]): FlowDetectionResult {
         id: match.playbook.id,
         name: match.playbook.name,
         type: "flow",
+        category: match.playbook.category,
+        detailLevel: match.playbook.detailLevel,
+        priorityDefault: match.playbook.priorityDefault,
         keyMetric: match.playbook.keyMetric,
         permissionLevel: match.playbook.permissionLevel,
       },
@@ -238,13 +211,26 @@ export function detectExistingFlows(flows: KlaviyoFlow[]): FlowDetectionResult {
       })),
   ];
   const missingCoreFlows = flowPlaybooks
+    .filter(isCoreRequiredFlowPlaybook)
     .filter((playbook) => !activePlaybookIds.has(playbook.id))
     .map((playbook) => ({
       playbookId: playbook.id,
       playbookName: playbook.name,
+      category: playbook.category,
+      detailLevel: playbook.detailLevel,
+      priorityDefault: playbook.priorityDefault,
       keyMetric: playbook.keyMetric,
-      reason: "No active Klaviyo flow was detected for this Worklin flow playbook.",
+      reason: "No active Klaviyo flow was detected for this core Worklin flow playbook.",
     }));
+  const detectedByCategory = detectedFlows.reduce<Record<FlowPlaybook["category"], number>>((counts, detected) => {
+    counts[detected.playbook.category] += 1;
+    return counts;
+  }, {
+    core: 0,
+    secondary: 0,
+    conditional: 0,
+    infrastructure: 0,
+  });
 
   return {
     detectedFlows,
@@ -260,6 +246,8 @@ export function detectExistingFlows(flows: KlaviyoFlow[]): FlowDetectionResult {
       draftOrInactiveCount: draftOrInactiveFlows.length,
       coveredPlaybooks: Array.from(activePlaybookIds),
       missingPlaybooks: missingCoreFlows.map((flow) => flow.playbookId),
+      detectedByCategory,
+      missingCorePlaybooks: missingCoreFlows.map((flow) => flow.playbookId),
     },
   };
 }

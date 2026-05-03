@@ -6,6 +6,7 @@ import {
   summarizeAuditInsights,
 } from "@/lib/audits/insights";
 import type {
+  AuditAffectedEntity,
   AuditCaveat,
   AuditChartHint,
   AuditEvidence,
@@ -307,6 +308,20 @@ function productEvidence(productIntelligence: ProductPerformanceIntelligenceResu
     }];
   }
 
+  if (playbook.id === "cross_sell" || playbook.id.startsWith("post_purchase")) {
+    const addOns = productIntelligence.tiers.addOnBoosters.slice(0, 3);
+    const anchors = productIntelligence.tiers.revenueAnchors.slice(0, 3);
+    const products = addOns.length ? addOns : anchors;
+    if (!products.length) return [];
+    return [{
+      type: "product",
+      label: `${products.length} product candidates can inform ${playbook.name} recommendations.`,
+      value: products.map((candidate) => candidate.name).join(", "),
+      source: "product_performance_intelligence",
+      metricKey: addOns.length ? "addOnBoosters" : "revenueAnchors",
+    }];
+  }
+
   return [];
 }
 
@@ -431,8 +446,8 @@ function performanceEvidence(performance: FlowAuditResult["performance"]): Audit
   return evidence.filter((item): item is AuditEvidence => Boolean(item));
 }
 
-function flowEntity(flow: KlaviyoFlowDetail, playbook: FlowPlaybook | null) {
-  return [
+function flowEntity(flow: KlaviyoFlowDetail, playbook: FlowPlaybook | null): AuditAffectedEntity[] {
+  const entities: AuditAffectedEntity[] = [
     {
       id: flow.id,
       type: "flow" as const,
@@ -443,15 +458,23 @@ function flowEntity(flow: KlaviyoFlowDetail, playbook: FlowPlaybook | null) {
         triggerType: flow.triggerType,
       },
     },
-    ...(playbook
-      ? [{
+  ];
+
+  if (playbook) {
+    entities.push({
         id: playbook.id,
         type: "playbook" as const,
         name: playbook.name,
         source: "worklin_flow_playbook",
-      }]
-      : []),
-  ];
+        metadata: {
+          category: playbook.category,
+          detailLevel: playbook.detailLevel,
+          priorityDefault: playbook.priorityDefault,
+        },
+    });
+  }
+
+  return entities;
 }
 
 function insightToFinding(insight: AuditInsight): FlowAuditFinding {
@@ -481,6 +504,7 @@ function buildInsights(input: {
   const flow = input.flow;
   const playbook = input.playbook;
   const expectedMessages = playbook?.sequence.length ?? 0;
+  const hasSequenceExpectation = Boolean(playbook && playbook.detailLevel !== "placeholder" && expectedMessages > 0);
   const commonEvidence: AuditEvidence[] = [
     {
       type: "structure",
@@ -515,6 +539,13 @@ function buildInsights(input: {
       ? [{
         message: "Flow content appears unavailable or image/asset based; audit does not assume readable HTML text exists.",
         evidenceType: "content" as const,
+        severity: "unknown" as const,
+      }]
+      : []),
+    ...(playbook && playbook.detailLevel !== "full"
+      ? [{
+        message: `${playbook.name} is a ${playbook.detailLevel} Worklin playbook; audit coverage is limited to known structure, metadata, and safe lifecycle expectations.`,
+        evidenceType: "playbook" as const,
         severity: "unknown" as const,
       }]
       : []),
@@ -560,7 +591,7 @@ function buildInsights(input: {
     return insights.map((insight) => createAuditInsight(insight));
   }
 
-  if (input.stats.messageCount < Math.max(1, expectedMessages)) {
+  if (hasSequenceExpectation && input.stats.messageCount < Math.max(1, expectedMessages)) {
     insights.push({
       id: `flow_fix_sequence_${flow.id}`,
       title: `Fix ${playbook.name} sequence depth`,
@@ -601,7 +632,7 @@ function buildInsights(input: {
     });
   }
 
-  if (expectedMessages > 1 && input.stats.timeDelayCount < expectedMessages - 1) {
+  if (hasSequenceExpectation && expectedMessages > 1 && input.stats.timeDelayCount < expectedMessages - 1) {
     insights.push({
       id: `flow_audit_timing_${flow.id}`,
       title: `Audit ${playbook.name} timing`,
@@ -714,7 +745,12 @@ function buildInsights(input: {
     });
   }
 
-  if (input.score >= 78 && input.stats.messageCount >= Math.max(1, expectedMessages) && input.stats.sendEmailActionCount > 0) {
+  if (
+    playbook.detailLevel !== "placeholder"
+    && input.score >= 78
+    && input.stats.messageCount >= Math.max(1, expectedMessages)
+    && input.stats.sendEmailActionCount > 0
+  ) {
     insights.push({
       id: `flow_protect_${flow.id}`,
       title: `Protect ${playbook.name} structure`,
@@ -787,18 +823,24 @@ function scoreFlowAudit(input: {
 }) {
   let score = 78;
   const expectedMessages = input.playbook?.sequence.length ?? 2;
+  const expectsCustomerMessages = input.playbook?.detailLevel !== "placeholder";
 
   if (!isActiveFlow(input.flow)) score -= 12;
   if (!input.playbook) score -= 18;
   if (!input.stats.triggerType) score -= 8;
-  if (input.stats.messageCount === 0) score -= 25;
-  if (input.stats.messageCount > 0 && input.stats.messageCount < expectedMessages) {
+  if (expectsCustomerMessages && input.stats.messageCount === 0) score -= 25;
+  if (expectsCustomerMessages && input.stats.messageCount > 0 && input.stats.messageCount < expectedMessages) {
     score -= input.stats.messageCount <= 1 ? 18 : 10;
   }
-  if (expectedMessages > 1 && input.stats.timeDelayCount < expectedMessages - 1) score -= 8;
+  if (expectsCustomerMessages && expectedMessages > 1 && input.stats.timeDelayCount < expectedMessages - 1) score -= 8;
   if (input.stats.sendEmailActionCount > 0 && input.stats.subjectLineCount === 0) score -= 8;
   if (!input.performance.available) score -= 3;
-  if (input.stats.messageCount >= expectedMessages && input.stats.timeDelayCount >= Math.max(0, expectedMessages - 1)) score += 10;
+  if (
+    expectsCustomerMessages
+    && input.stats.messageCount >= expectedMessages
+    && input.stats.timeDelayCount >= Math.max(0, expectedMessages - 1)
+  ) score += 10;
+  if (!expectsCustomerMessages && input.stats.actionCount > 0) score += 4;
   if (input.performance.available) score += 5;
 
   return clampScore(score);
@@ -811,7 +853,9 @@ function auditSummary(input: {
   contentUnderstanding: FlowContentUnderstanding;
   stats: FlowStructureStats;
 }) {
-  const playbookText = input.playbook ? ` against the ${input.playbook.name} playbook` : " as an unmapped lifecycle flow";
+  const playbookText = input.playbook
+    ? ` against the ${input.playbook.name} ${input.playbook.category} playbook (${input.playbook.detailLevel} detail)`
+    : " as an unmapped lifecycle flow";
   return `${input.flow.name} scored ${input.score}/100${playbookText}. The audit used ${input.stats.messageCount} messages, ${input.stats.timeDelayCount} visible timing markers, ${input.stats.subjectLineCount} subject lines, and content understanding: ${input.contentUnderstanding}.`;
 }
 

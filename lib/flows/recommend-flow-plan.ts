@@ -3,7 +3,7 @@ import type {
   FlowDetectionResult,
 } from "@/lib/flows/detect-existing-flows";
 import type { KlaviyoFlow } from "@/lib/klaviyo-flows";
-import { flowPlaybooks } from "@/lib/playbooks/flows";
+import { flowPlaybooks, isCoreRequiredFlowPlaybook } from "@/lib/playbooks/flows";
 import type { FlowPlaybook, FlowSequenceStep } from "@/lib/playbooks/types";
 
 export type FlowPlannerInput = {
@@ -39,6 +39,9 @@ export type FlowRecommendation = {
   flowId: string;
   flowName: string;
   klaviyoFlowIds: string[];
+  playbookCategory?: FlowPlaybook["category"];
+  detailLevel?: FlowPlaybook["detailLevel"];
+  priorityDefault?: FlowPlaybook["priorityDefault"];
   action: FlowRecommendationAction;
   priority: FlowRecommendationPriority;
   reason: string;
@@ -54,6 +57,8 @@ export type FlowRecommendation = {
   qaRisks: string[];
   offerRules: string[];
   keyMetric: string;
+  recommendedWhen?: string[];
+  conditionalRequirements?: string[];
   recommendedNextAction: string;
 };
 
@@ -65,6 +70,8 @@ export type CoveredFlow = {
   confidence: number;
   evidence: string[];
   keyMetric: string;
+  playbookCategory: FlowPlaybook["category"];
+  detailLevel: FlowPlaybook["detailLevel"];
 };
 
 export type ClassifiedUnknownFlow = {
@@ -81,6 +88,9 @@ export type FlowPlanRecommendationResult = {
   recommendations: FlowRecommendation[];
   coveredFlows: CoveredFlow[];
   missingCoreFlows: FlowRecommendation[];
+  secondaryOpportunities: FlowRecommendation[];
+  conditionalOpportunities: FlowRecommendation[];
+  infrastructureOpportunities: FlowRecommendation[];
   draftOrInactiveFlows: FlowRecommendation[];
   unknownFlows: ClassifiedUnknownFlow[];
 };
@@ -112,11 +122,39 @@ function playbookById(id: string) {
   return flowPlaybooks.find((playbook) => playbook.id === id) ?? null;
 }
 
+function escapedRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function includesPhrase(normalizedText: string, phrase: string) {
+  const normalizedPhrase = normalize(phrase);
+  if (!normalizedPhrase) return false;
+  return new RegExp(`\\b${escapedRegExp(normalizedPhrase).replace(/\s+/g, "\\s+")}\\b`).test(normalizedText);
+}
+
+function goalMatchesPlaybook(playbook: FlowPlaybook, input: FlowPlannerInput) {
+  const text = normalize(goalText(input));
+  if (!text) return false;
+
+  return [
+    playbook.id,
+    playbook.name,
+    ...playbook.plannerMatch.aliases,
+    ...(playbook.plannerMatch.triggerKeywords ?? []),
+    ...playbook.recommendedWhen,
+    ...playbook.conditionalRequirements,
+  ].some((phrase) => includesPhrase(text, phrase));
+}
+
 function playbookPriority(playbook: FlowPlaybook, input: FlowPlannerInput): FlowRecommendationPriority {
   const text = normalize(goalText(input));
+  const goalMatch = goalMatchesPlaybook(playbook, input);
 
   if (playbook.id === "checkout_abandon") return "high";
   if (playbook.id === "cart_abandon") return "high";
+
+  if (goalMatch && playbook.priorityDefault !== "low") return "high";
+  if (goalMatch) return "medium";
 
   if (playbook.id === "welcome_series") {
     return /\b(welcome|subscriber|signup|sign up|onboard|new subscriber|conversion)\b/.test(text)
@@ -136,7 +174,9 @@ function playbookPriority(playbook: FlowPlaybook, input: FlowPlannerInput): Flow
     return /\b(browse|site|top funnel|mid funnel|abandon|recover)\b/.test(text) ? "medium" : "low";
   }
 
-  return "medium";
+  if (playbook.priorityDefault === "high") return "high";
+  if (playbook.priorityDefault === "medium") return "medium";
+  return "low";
 }
 
 function priorityRank(priority: FlowRecommendationPriority) {
@@ -205,6 +245,9 @@ function recommendationBase(playbook: FlowPlaybook) {
   return {
     flowId: playbook.id,
     flowName: playbook.name,
+    playbookCategory: playbook.category,
+    detailLevel: playbook.detailLevel,
+    priorityDefault: playbook.priorityDefault,
     trigger: playbook.trigger,
     flowFilters: playbook.flowFilters,
     targetAudience: playbook.targetAudience,
@@ -214,6 +257,8 @@ function recommendationBase(playbook: FlowPlaybook) {
     qaRisks: playbook.qaRisks,
     offerRules: playbook.offerRules,
     keyMetric: playbook.keyMetric,
+    recommendedWhen: playbook.recommendedWhen,
+    conditionalRequirements: playbook.conditionalRequirements,
   };
 }
 
@@ -231,6 +276,42 @@ function buildRecommendation(playbook: FlowPlaybook, input: FlowPlannerInput): F
       "Flow detection found no draft or inactive mapped candidate to finish first.",
     ],
     recommendedNextAction: `Build the ${playbook.name} playbook using its trigger, filters, timing, and QA risks before considering Klaviyo implementation.`,
+  };
+}
+
+function opportunityAction(playbook: FlowPlaybook): FlowRecommendationAction {
+  if (playbook.category === "infrastructure") return "audit";
+  if (playbook.id === "transactional" || playbook.detailLevel === "placeholder") return "audit";
+  return "build";
+}
+
+function opportunityRecommendation(playbook: FlowPlaybook, input: FlowPlannerInput): FlowRecommendation {
+  const action = opportunityAction(playbook);
+  const categoryText = playbook.category === "secondary"
+    ? "secondary lifecycle opportunity"
+    : playbook.category === "conditional"
+      ? "conditional lifecycle opportunity"
+      : "infrastructure/audience automation opportunity";
+  const conditionText = playbook.conditionalRequirements.length
+    ? ` Required condition: ${playbook.conditionalRequirements[0]}`
+    : "";
+
+  return {
+    ...recommendationBase(playbook),
+    klaviyoFlowIds: [],
+    action,
+    priority: playbookPriority(playbook, input),
+    reason: `${playbook.name} is a ${categoryText}, not a missing core flow.${conditionText}`,
+    currentState: "missing",
+    confidence: playbook.category === "secondary" ? 0.62 : 0.5,
+    evidence: [
+      `Flow detection found no active flow mapped to ${playbook.name}.`,
+      `${playbook.name} is categorized as ${playbook.category} with ${playbook.detailLevel} detail coverage.`,
+      ...playbook.recommendedWhen.slice(0, 2).map((item) => `Recommended when: ${item}`),
+    ],
+    recommendedNextAction: action === "audit"
+      ? `Audit whether ${playbook.name} belongs in the brand's lifecycle architecture before building customer-facing sends.`
+      : `Validate the required data and business case for ${playbook.name}, then plan it as an opportunity rather than a core gap.`,
   };
 }
 
@@ -368,23 +449,58 @@ function coveredFlow(detected: DetectedFlow): CoveredFlow | null {
     confidence: clampConfidence(detected.confidence),
     evidence: detectedEvidence(detected),
     keyMetric: detected.playbook.keyMetric,
+    playbookCategory: detected.playbook.category,
+    detailLevel: detected.playbook.detailLevel,
   };
+}
+
+const DEFAULT_SECONDARY_OPPORTUNITY_IDS = new Set([
+  "cross_sell",
+  "post_purchase_post_delivery",
+  "review",
+  "sunset",
+]);
+
+function shouldSurfaceOpportunity(playbook: FlowPlaybook, input: FlowPlannerInput) {
+  if (isCoreRequiredFlowPlaybook(playbook)) return false;
+  if (playbook.category === "secondary") {
+    return DEFAULT_SECONDARY_OPPORTUNITY_IDS.has(playbook.id) || goalMatchesPlaybook(playbook, input);
+  }
+
+  return goalMatchesPlaybook(playbook, input);
+}
+
+function capOpportunities(recommendations: FlowRecommendation[], limit: number) {
+  return sortRecommendations(recommendations).slice(0, limit);
+}
+
+function opportunityMatchesPlannerGoal(recommendation: FlowRecommendation, input: FlowPlannerInput) {
+  const playbook = playbookById(recommendation.flowId);
+  return Boolean(playbook && goalMatchesPlaybook(playbook, input));
 }
 
 function summarize(result: {
   recommendations: FlowRecommendation[];
   coveredFlows: CoveredFlow[];
   missingCoreFlows: FlowRecommendation[];
+  secondaryOpportunities: FlowRecommendation[];
+  conditionalOpportunities: FlowRecommendation[];
+  infrastructureOpportunities: FlowRecommendation[];
   draftOrInactiveFlows: FlowRecommendation[];
   unknownFlows: ClassifiedUnknownFlow[];
 }) {
   const high = result.recommendations.filter((recommendation) => recommendation.priority === "high").length;
   const build = result.recommendations.filter((recommendation) => recommendation.action === "build").length;
   const review = result.recommendations.length - build;
+  const opportunityCount = result.secondaryOpportunities.length
+    + result.conditionalOpportunities.length
+    + result.infrastructureOpportunities.length;
 
   return [
     `Flow Planner found ${result.coveredFlows.length} covered lifecycle playbook${result.coveredFlows.length === 1 ? "" : "s"}.`,
+    `${result.missingCoreFlows.length} core required flow${result.missingCoreFlows.length === 1 ? "" : "s"} are missing; expanded catalog opportunities are separated from missing core gaps.`,
     `${build} flow${build === 1 ? "" : "s"} should be built, and ${review} existing flow${review === 1 ? "" : "s"} should be reviewed, finished, classified, consolidated, or cleaned up.`,
+    opportunityCount ? `${opportunityCount} secondary, conditional, or infrastructure opportunit${opportunityCount === 1 ? "y" : "ies"} surfaced.` : "No expanded catalog opportunity was surfaced from the current goal/context.",
     high ? `${high} recommendation${high === 1 ? "" : "s"} are high priority.` : "No high-priority recommendation was produced.",
   ].join(" ");
 }
@@ -406,6 +522,9 @@ export function recommendFlowPlan(
   const auditRecommendations: FlowRecommendation[] = [];
   const coveredFlows: CoveredFlow[] = [];
   const missingCoreFlows: FlowRecommendation[] = [];
+  const secondaryOpportunities: FlowRecommendation[] = [];
+  const conditionalOpportunities: FlowRecommendation[] = [];
+  const infrastructureOpportunities: FlowRecommendation[] = [];
   const draftOrInactiveFlows: FlowRecommendation[] = [];
 
   for (const playbook of flowPlaybooks) {
@@ -433,9 +552,21 @@ export function recommendFlowPlan(
       continue;
     }
 
-    if (!active.length && !inactive.length) {
+    if (!active.length && !inactive.length && isCoreRequiredFlowPlaybook(playbook)) {
       const build = buildRecommendation(playbook, input);
       missingCoreFlows.push(build);
+      continue;
+    }
+
+    if (!active.length && !inactive.length && shouldSurfaceOpportunity(playbook, input)) {
+      const opportunity = opportunityRecommendation(playbook, input);
+      if (playbook.category === "secondary") {
+        secondaryOpportunities.push(opportunity);
+      } else if (playbook.category === "conditional") {
+        conditionalOpportunities.push(opportunity);
+      } else if (playbook.category === "infrastructure") {
+        infrastructureOpportunities.push(opportunity);
+      }
     }
   }
 
@@ -445,6 +576,9 @@ export function recommendFlowPlan(
     ...missingCoreFlows,
     ...draftOrInactiveFlows,
     ...auditRecommendations,
+    ...capOpportunities(secondaryOpportunities.filter((recommendation) => opportunityMatchesPlannerGoal(recommendation, input)), 4),
+    ...capOpportunities(conditionalOpportunities.filter((recommendation) => opportunityMatchesPlannerGoal(recommendation, input)), 3),
+    ...capOpportunities(infrastructureOpportunities.filter((recommendation) => opportunityMatchesPlannerGoal(recommendation, input)), 2),
     ...unknownRecommendations,
   ]);
   const limitedRecommendations = allRecommendations.slice(0, limit);
@@ -453,6 +587,9 @@ export function recommendFlowPlan(
     recommendations: limitedRecommendations,
     coveredFlows,
     missingCoreFlows,
+    secondaryOpportunities: capOpportunities(secondaryOpportunities, 4),
+    conditionalOpportunities: capOpportunities(conditionalOpportunities, 3),
+    infrastructureOpportunities: capOpportunities(infrastructureOpportunities, 2),
     draftOrInactiveFlows,
     unknownFlows,
   };
