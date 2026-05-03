@@ -7,6 +7,7 @@ import type {
 
 export const AGENT_TOOL_CATEGORIES: AgentToolCategory[] = [
   "workflow",
+  "flows",
   "klaviyo",
   "playbooks",
   "memory",
@@ -99,6 +100,47 @@ export const agentToolRegistry: AgentToolDefinition[] = [
     backingRoute: "POST /api/agent/commands/approve-workflow",
     handlerReference: "app/api/agent/commands/approve-workflow/route.ts",
     notes: ["Draft-only. Refuses send or schedule intent."],
+  },
+  {
+    name: "flows.recommend",
+    description:
+      "Read existing Klaviyo flows, detect coverage against Worklin flow playbooks, and recommend which lifecycle flows to build, finish, audit, classify, consolidate, or clean up.",
+    category: "flows",
+    inputSchema: {
+      type: "object",
+      description: "Optional flow planning context and recommendation limit.",
+      properties: {
+        message: {
+          type: "string",
+          description: "Optional natural-language request or context for the flow recommendation.",
+        },
+        goal: {
+          type: "string",
+          description: "Optional business goal such as recovering abandoned checkouts or increasing repeat purchase.",
+        },
+        constraints: {
+          type: "array",
+          description: "Optional flow planning constraints.",
+          items: "string",
+        },
+        limit: {
+          type: "number",
+          description: "Optional maximum number of recommendations to return.",
+        },
+      },
+    },
+    outputDescription:
+      "Read-only flow recommendation plan with recommendations, covered flows, missing core flows, draft/inactive flows, unknown flows, summary, and optional WorkflowRun id.",
+    permissionLevel: "read",
+    requiresApproval: false,
+    riskLevel: "low",
+    currentStatus: "available",
+    backingRoute: "POST /api/flows/recommend",
+    handlerReference: "app/api/flows/recommend/route.ts",
+    notes: [
+      "Reads Klaviyo flows only.",
+      "Does not create, update, delete, schedule, or send Klaviyo flows.",
+    ],
   },
   {
     name: "klaviyo.createDraftFromBrief",
