@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { POST as approveWorkflow } from "@/app/api/agent/commands/approve-workflow/route";
+import { POST as recommendFlows } from "@/app/api/flows/recommend/route";
 import {
   cleanWorkflowId,
   serializeWorkflowRun,
@@ -34,6 +35,7 @@ type CommandIntent =
   | "list_workflows"
   | "get_workflow"
   | "list_playbooks"
+  | "recommend_flows"
   | "clarify";
 
 type ToolName =
@@ -41,7 +43,8 @@ type ToolName =
   | "workflow.approveAndCreateDrafts"
   | "workflow.list"
   | "workflow.get"
-  | "playbooks.list";
+  | "playbooks.list"
+  | "flows.recommend";
 
 type CommandResponseInput = {
   ok?: boolean;
@@ -187,6 +190,17 @@ function detectsListPlaybooksIntent(message: string) {
   return /\b(playbook|playbooks)\b/i.test(message);
 }
 
+function detectsRecommendFlowsIntent(message: string) {
+  return (
+    /\b(audit|diagnose|review|fix|improve|optimi[sz]e)\b.*\b(klaviyo\s+)?flows?\b/i.test(message) ||
+    /\b(what|which)\b.*\b(lifecycle\s+)?flows?\b.*\b(missing|build|next|need|have|recommend)\b/i.test(message) ||
+    /\b(lifecycle|automation|automations)\b.*\b(missing|build|next|need|have|recommend|audit|fix)\b/i.test(message) ||
+    /\b(recover|recovery)\b.*\b(abandoned?\s+checkouts?|checkout\s+abandon|abandoned?\s+carts?|cart\s+abandon)\b/i.test(message) ||
+    /\b(increase|grow|improve)\b.*\b(repeat\s+purchases?|reorders?|restock|replenishment)\b.*\b(flows?|automations?)\b/i.test(message) ||
+    /\bwhat\s+automations?\s+should\s+this\s+brand\s+have\b/i.test(message)
+  );
+}
+
 function inferPlaybookType(message: string): PlaybookType | undefined {
   const text = normalized(message);
   if (/\bflows?\b/.test(text)) return "flow";
@@ -198,8 +212,9 @@ function inferIntent(message: string, workflowId?: string): CommandIntent {
   if (detectsSendOrScheduleIntent(message)) return "clarify";
   if (detectsApprovalIntent(message)) return workflowId ? "approve_workflow" : "clarify";
   if (detectsListPlaybooksIntent(message)) return "list_playbooks";
-  if (workflowId && detectsGetWorkflowIntent(message)) return "get_workflow";
+  if (detectsGetWorkflowIntent(message)) return workflowId ? "get_workflow" : "clarify";
   if (detectsListWorkflowIntent(message)) return "list_workflows";
+  if (detectsRecommendFlowsIntent(message)) return "recommend_flows";
   if (detectsPlanBriefQaIntent(message)) return "plan_brief_qa";
   return "clarify";
 }
@@ -217,7 +232,7 @@ function detectsVipSignal(message: string, playbooks: WorklinPlaybook[] = []) {
 }
 
 function detectsFlowSignal(message: string, playbooks: WorklinPlaybook[] = []) {
-  return /\b(flows?|lifecycle|automation|welcome|abandon|cart|checkout|replenish|replenishment|winback|win\s+back)\b/i.test(message) ||
+  return /\b(flows?|lifecycle|automations?|welcome|abandon|carts?|checkouts?|replenish|replenishment|winback|win\s+back)\b/i.test(message) ||
     playbooks.some((playbook) => playbook.type === "flow");
 }
 
@@ -381,6 +396,35 @@ async function routeApproveWorkflow(message: string, workflowId: string, context
   });
 }
 
+async function routeRecommendFlows(
+  message: string,
+  contextSummary: CommandContextSummary,
+  parameters: IntentParameters = {},
+) {
+  const constraints = uniqueStrings(parameters.constraints ?? []);
+  const { response, data } = await callJsonRoute(
+    recommendFlows,
+    "/api/flows/recommend",
+    {
+      message,
+      goal: parameters.focus ?? message,
+      ...(constraints.length ? { constraints } : {}),
+    },
+  );
+
+  return commandResponse({
+    ok: response.ok && data?.ok !== false,
+    intent: "recommend_flows",
+    tool: "flows.recommend",
+    result: data,
+    message: response.ok
+      ? "I ran the read-only Flow Planner against the connected Klaviyo flows."
+      : "I could not run the read-only Flow Planner.",
+    status: response.status,
+    contextSummary,
+  });
+}
+
 async function routeListWorkflows(contextSummary: CommandContextSummary) {
   const workflows = await prisma.workflowRun.findMany({
     orderBy: { createdAt: "desc" },
@@ -520,10 +564,11 @@ function routeClarify(message: string, contextSummary: CommandContextSummary, wo
         "list_workflows",
         "get_workflow",
         "list_playbooks",
+        "recommend_flows",
       ],
     },
     message:
-      "I am not sure which Worklin action you want. Try asking me to plan campaigns, approve a workflow, show recent workflows, open a workflow, or list playbooks.",
+      "I am not sure which Worklin action you want. Try asking me to plan campaigns, audit flows, approve a workflow, show recent workflows, open a workflow, or list playbooks.",
     contextSummary,
   });
 }
@@ -578,7 +623,12 @@ export async function POST(request: Request) {
       return routeClarify(message, contextSummary, resolvedWorkflowId);
     }
 
+    if (detectsGetWorkflowIntent(message) && !resolvedWorkflowId) {
+      return routeClarify(message, contextSummary, resolvedWorkflowId);
+    }
+
     if (intent === "plan_brief_qa") return routePlanBriefQa(message, contextSummary, parsedIntent.parameters);
+    if (intent === "recommend_flows") return routeRecommendFlows(message, contextSummary, parsedIntent.parameters);
     if (intent === "approve_workflow" && resolvedWorkflowId) {
       return routeApproveWorkflow(message, resolvedWorkflowId, contextSummary);
     }

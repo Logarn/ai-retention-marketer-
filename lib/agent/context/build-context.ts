@@ -201,7 +201,7 @@ function maybeAddPlaybook(playbooks: Map<string, WorklinPlaybook>, id: string) {
 function relevantPlaybooksForMessage(message: string, limit: number) {
   const text = normalizeText(message);
   const selected = new Map<string, WorklinPlaybook>();
-  const mentionsFlow = hasAny(text, [/\bflows?\b/, /\blifecycle\b/, /\bautomation\b/]);
+  const mentionsFlow = hasAny(text, [/\bflows?\b/, /\blifecycle\b/, /\bautomations?\b/]);
   const mentionsCampaign = hasAny(text, [/\bcampaigns?\b/, /\bemails?\b/, /\bretention\b/]);
   let matchedSpecificFlow = false;
   let matchedSpecificCampaign = false;
@@ -218,11 +218,11 @@ function relevantPlaybooksForMessage(message: string, limit: number) {
     maybeAddPlaybook(selected, "browse_abandon");
     matchedSpecificFlow = true;
   }
-  if (/\bcart\b/.test(text)) {
+  if (/\bcarts?\b/.test(text)) {
     maybeAddPlaybook(selected, "cart_abandon");
     matchedSpecificFlow = true;
   }
-  if (/\bcheckout\b/.test(text)) {
+  if (/\bcheckouts?\b/.test(text)) {
     maybeAddPlaybook(selected, "checkout_abandon");
     matchedSpecificFlow = true;
   }
