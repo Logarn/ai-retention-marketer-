@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  getKlaviyoFlowDetail,
   getKlaviyoFlowConfig,
   KlaviyoFlowApiError,
   listKlaviyoFlows,
@@ -35,7 +36,12 @@ function safeKlaviyoFlowError(error: unknown) {
   );
 }
 
-export async function GET() {
+function wantsDetails(request: Request) {
+  const url = new URL(request.url);
+  return url.searchParams.get("includeDetails") === "true";
+}
+
+export async function GET(request: Request) {
   const configResult = getKlaviyoFlowConfig();
   if (!configResult.ok) {
     return NextResponse.json(
@@ -51,12 +57,21 @@ export async function GET() {
 
   try {
     const flows = await listKlaviyoFlows(configResult.config);
+    const includeDetails = wantsDetails(request);
+    const outputFlows = [];
+
+    if (includeDetails) {
+      for (const flow of flows) {
+        outputFlows.push(await getKlaviyoFlowDetail(configResult.config, flow.id));
+      }
+    }
 
     return NextResponse.json({
       ok: true,
       readOnly: true,
-      count: flows.length,
-      flows,
+      includeDetails,
+      count: outputFlows.length || flows.length,
+      flows: includeDetails ? outputFlows : flows,
     });
   } catch (error) {
     return safeKlaviyoFlowError(error);
