@@ -28,7 +28,7 @@ const sampleInsightSchema = z
     priorityScore: z.number().min(0).max(100).optional(),
     evidence: z.array(z.record(z.string(), z.unknown())).max(20).optional(),
     caveats: z.array(z.union([z.string(), z.record(z.string(), z.unknown())])).max(20).optional(),
-    recommendedActions: z.array(z.record(z.string(), z.unknown())).max(20).optional(),
+    recommendedActions: z.array(z.union([z.string(), z.record(z.string(), z.unknown())])).max(20).optional(),
     affectedEntities: z.array(z.record(z.string(), z.unknown())).max(20).optional(),
     chartHints: z.array(z.record(z.string(), z.unknown())).max(12).optional(),
   })
@@ -80,17 +80,28 @@ function coerceCaveats(rows: Array<string | Record<string, unknown>> | undefined
   });
 }
 
-function coerceActions(rows: Array<Record<string, unknown>> | undefined): AuditRecommendedAction[] {
-  return (rows ?? []).map((row, index) => ({
-    id: asString(row.id) ?? `sample-action-${index + 1}`,
-    label: asString(row.label) ?? asString(row.title) ?? `Review sample action ${index + 1}`,
-    description: asString(row.description) ?? undefined,
-    actionType: asString(row.actionType) ?? undefined,
-    owner: asString(row.owner) ?? undefined,
-    priority: asString(row.priority) ?? undefined,
-    estimatedImpact: asString(row.estimatedImpact) ?? undefined,
-    requiresApproval: typeof row.requiresApproval === "boolean" ? row.requiresApproval : undefined,
-  })) as AuditRecommendedAction[];
+function coerceActions(rows: Array<string | Record<string, unknown>> | undefined): AuditRecommendedAction[] {
+  return (rows ?? []).map((row, index) => {
+    if (typeof row === "string") {
+      return {
+        id: `sample-action-${index + 1}`,
+        label: row.trim() || `Review sample action ${index + 1}`,
+        actionType: "audit",
+        priority: "medium",
+      };
+    }
+
+    return {
+      id: asString(row.id) ?? `sample-action-${index + 1}`,
+      label: asString(row.label) ?? asString(row.title) ?? `Review sample action ${index + 1}`,
+      description: asString(row.description) ?? undefined,
+      actionType: asString(row.actionType) ?? undefined,
+      owner: asString(row.owner) ?? undefined,
+      priority: asString(row.priority) ?? undefined,
+      estimatedImpact: asString(row.estimatedImpact) ?? undefined,
+      requiresApproval: typeof row.requiresApproval === "boolean" ? row.requiresApproval : undefined,
+    };
+  }) as AuditRecommendedAction[];
 }
 
 function coerceSampleInsight(input: SampleInsightInput, index: number, createdAt: string): AuditInsightInput {
