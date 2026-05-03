@@ -29,6 +29,34 @@ type ChatSession = {
   messages: DbMessage[];
 };
 
+type CommandContextSummary = {
+  signals?: Record<string, boolean>;
+  playbooks?: Array<{ id: string; name: string; type: string }>;
+  recentEligibleWorkflows?: Array<{
+    id: string;
+    type: string;
+    status: string;
+    createdAt: string;
+  }>;
+  referencedWorkflow?: {
+    id: string;
+    type: string;
+    status: string;
+    createdAt: string;
+  } | null;
+  recentDrafts?: number;
+  relevantBriefs?: number;
+};
+
+type CommandResponse = {
+  ok: boolean;
+  intent: string;
+  tool: string | null;
+  result?: unknown;
+  message: string;
+  contextSummary?: CommandContextSummary;
+};
+
 const TOOL_LABELS: Record<string, string> = {
   getBrandProfile: "Getting brand profile",
   updateBrandProfile: "Updating brand profile",
@@ -99,6 +127,146 @@ function toolLineFromPart(part: unknown): string | null {
   return `🔧 ${label}...`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function asString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function detectsApprovalIntent(message: string) {
+  return (
+    /\bapproved?\b/i.test(message) ||
+    /\blooks?\s+good\b/i.test(message) ||
+    /\bgo\s+ahead\b/i.test(message) ||
+    /\bapprove\s+(these|them|the\s+ready\s+ones|ready\s+ones)\b/i.test(message) ||
+    /\bship\s+the\s+drafts?\b/i.test(message)
+  );
+}
+
+function detectsSendOrScheduleIntent(message: string) {
+  return /\b(send|sending|sent|schedule|scheduled|scheduling|launch|launching|go\s+live)\b/i.test(message);
+}
+
+function workflowUrl(workflowId: string) {
+  return `/agent/workflows?workflowId=${encodeURIComponent(workflowId)}`;
+}
+
+function extractWorkflowIdFromText(text: string) {
+  const queryMatch = text.match(/workflowId=([A-Za-z0-9_-]+)/);
+  if (queryMatch?.[1]) return queryMatch[1];
+  const labelMatch = text.match(/\bWorkflow(?: ID)?:\s*`?([A-Za-z0-9_-]+)`?/i);
+  return labelMatch?.[1] ?? null;
+}
+
+function findLatestWorkflowId(messages: DbMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const workflowId = extractWorkflowIdFromText(messages[index].content);
+    if (workflowId) return workflowId;
+  }
+  return null;
+}
+
+function getWorkflowIdFromCommand(response: CommandResponse) {
+  const result = isRecord(response.result) ? response.result : {};
+  const direct = asString(result.workflowId);
+  if (direct) return direct;
+
+  const workflow = isRecord(result.workflow) ? result.workflow : null;
+  const workflowId = asString(workflow?.id);
+  if (workflowId) return workflowId;
+
+  return response.contextSummary?.referencedWorkflow?.id ?? null;
+}
+
+function formatWorkflowLines(response: CommandResponse) {
+  const result = isRecord(response.result) ? response.result : {};
+  const workflowId = getWorkflowIdFromCommand(response);
+  const lines: string[] = [];
+
+  if (workflowId) {
+    lines.push(`Workflow: \`${workflowId}\``);
+    lines.push(`[Open workflow in canvas](${workflowUrl(workflowId)})`);
+  }
+
+  const workflows = asArray(result.workflows);
+  const recentEligible = asArray(result.recentEligibleWorkflows);
+  const workflowList = workflows.length ? workflows : recentEligible;
+
+  if (workflowList.length && !workflowId) {
+    lines.push("Recent workflows:");
+    for (const item of workflowList.slice(0, 4)) {
+      if (!isRecord(item)) continue;
+      const id = asString(item.id);
+      if (!id) continue;
+      const status = asString(item.status) ?? "unknown";
+      const type = asString(item.type) ?? "workflow";
+      lines.push(`- ${type} · ${status}: [open](${workflowUrl(id)})`);
+    }
+  }
+
+  return lines;
+}
+
+function formatPlaybookLines(response: CommandResponse) {
+  const result = isRecord(response.result) ? response.result : {};
+  const playbooks = asArray(result.playbooks);
+  if (!playbooks.length) return [];
+
+  const lines = ["Relevant playbooks:"];
+  for (const item of playbooks.slice(0, 6)) {
+    if (!isRecord(item)) continue;
+    const name = asString(item.name) ?? asString(item.id) ?? "Playbook";
+    const type = asString(item.type) ?? "playbook";
+    lines.push(`- ${name} (${type})`);
+  }
+  return lines;
+}
+
+function formatDraftLines(response: CommandResponse) {
+  const result = isRecord(response.result) ? response.result : {};
+  const created = asArray(result.draftsCreated).length;
+  const held = asArray(result.held).length;
+  const skipped = asArray(result.skipped).length;
+  if (!created && !held && !skipped) return [];
+  return [`Drafts: ${created} created, ${held} held, ${skipped} skipped. Nothing was scheduled or sent.`];
+}
+
+function formatContextSummary(context: CommandContextSummary | undefined) {
+  if (!context) return null;
+  const activeSignals = Object.entries(context.signals ?? {})
+    .filter(([, enabled]) => enabled)
+    .map(([name]) => name);
+  const signalText = activeSignals.length ? activeSignals.join(", ") : "none";
+  const playbookCount = context.playbooks?.length ?? 0;
+  const workflowCount = context.recentEligibleWorkflows?.length ?? 0;
+  const draftCount = context.recentDrafts ?? 0;
+  const briefCount = context.relevantBriefs ?? 0;
+  return `Context: ${signalText} signals · ${playbookCount} playbooks · ${workflowCount} eligible workflows · ${draftCount} drafts · ${briefCount} briefs.`;
+}
+
+function formatCommandResponse(response: CommandResponse) {
+  const lines = [
+    response.message,
+    ...formatWorkflowLines(response),
+    ...formatPlaybookLines(response),
+    ...formatDraftLines(response),
+  ].filter(Boolean);
+
+  const contextLine = formatContextSummary(response.contextSummary);
+  if (contextLine) {
+    lines.push("");
+    lines.push(contextLine);
+  }
+
+  return lines.join("\n\n");
+}
+
 function AgentChatPanel({
   session,
   onSessionChange,
@@ -112,6 +280,8 @@ function AgentChatPanel({
 }) {
   const [input, setInput] = useState("");
   const [toast, setToast] = useState<string | null>(null);
+  const [commandBusy, setCommandBusy] = useState(false);
+  const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(() => findLatestWorkflowId(session.messages));
   const [thinkingIdx, setThinkingIdx] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -163,18 +333,23 @@ function AgentChatPanel({
   console.log("Messages:", messages);
 
   useEffect(() => {
+    setActiveWorkflowId(findLatestWorkflowId(session.messages));
+  }, [session.messages]);
+
+  useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, status]);
 
   useEffect(() => {
-    if (status !== "streaming" && status !== "submitted") return;
+    if (status !== "streaming" && status !== "submitted" && !commandBusy) return;
     const t = window.setInterval(() => {
       setThinkingIdx((i) => (i + 1) % THINKING_ROTATION.length);
     }, 2500);
     return () => clearInterval(t);
-  }, [status]);
+  }, [commandBusy, status]);
 
-  const busy = status === "streaming" || status === "submitted";
+  const aiBusy = status === "streaming" || status === "submitted";
+  const busy = aiBusy || commandBusy;
 
   async function handleNewChat() {
     const res = await fetch("/api/agent/sessions", { method: "POST" });
@@ -202,12 +377,63 @@ function AgentChatPanel({
     }
   }
 
+  async function saveCommandExchange(userText: string, assistantText: string) {
+    const res = await fetch(`/api/agent/sessions/${session.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          { role: "user", content: userText },
+          { role: "assistant", content: assistantText },
+        ],
+      }),
+    });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(data?.error ?? "Failed to save command response");
+    }
+    const data = (await res.json()) as { session: ChatSession };
+    onSessionChange(data.session);
+    setMessages(messagesFromDb(data.session.messages));
+    await onReloadSessions();
+  }
+
+  async function runCommand(text: string) {
+    const payload: { message: string; workflowId?: string } = { message: text };
+    if (activeWorkflowId && (detectsApprovalIntent(text) || detectsSendOrScheduleIntent(text))) {
+      payload.workflowId = activeWorkflowId;
+    }
+
+    const res = await fetch("/api/agent/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = (await res.json().catch(() => null)) as CommandResponse | null;
+    if (!res.ok || !data) {
+      throw new Error(data?.message ?? "Command router failed");
+    }
+
+    const workflowId = getWorkflowIdFromCommand(data);
+    if (workflowId) setActiveWorkflowId(workflowId);
+
+    await saveCommandExchange(text, formatCommandResponse(data));
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     const text = input.trim();
     if (!text || busy) return;
     setInput("");
-    await sendMessage({ text });
+    setCommandBusy(true);
+    try {
+      await runCommand(text);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Command router failed");
+      window.setTimeout(() => setToast(null), 8000);
+    } finally {
+      setCommandBusy(false);
+    }
   }
 
   async function onFilePick(e: React.ChangeEvent<HTMLInputElement>) {
@@ -412,13 +638,13 @@ function AgentChatPanel({
               }
             }}
           />
-          {busy ? (
+          {aiBusy ? (
             <Button type="button" variant="outline" className="shrink-0 border-white/15" onClick={() => void stop()}>
               Stop
             </Button>
           ) : (
-            <Button type="submit" className="shrink-0 gap-1 bg-indigo-600 hover:bg-indigo-500">
-              <SendHorizontal className="h-4 w-4" />
+            <Button type="submit" className="shrink-0 gap-1 bg-indigo-600 hover:bg-indigo-500" disabled={busy}>
+              {commandBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}
             </Button>
           )}
         </div>
