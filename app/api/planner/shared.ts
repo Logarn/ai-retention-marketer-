@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { SEGMENT_LABELS } from "@/lib/constants";
 import { prisma } from "@/lib/prisma";
+import { findCampaignPlaybookForRecommendation } from "@/lib/playbooks";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_CAMPAIGN_COUNT = 3;
@@ -749,28 +750,42 @@ export function generatePlanArtifact(
   const bestMemorySegment = context.memory.bestSegmentByRevenue?.key ?? null;
   const bestMemoryType = context.memory.bestCampaignTypeByRevenue?.key ?? null;
 
-  const items = selected.map((candidate, index) => ({
-    title: candidate.title,
-    campaignType: candidate.campaignType,
-    goal: candidate.goal,
-    segment: candidate.segment,
-    suggestedSendDate: sendDates[index],
-    subjectLineAngle: candidate.subjectLineAngle,
-    primaryProduct: candidate.primaryProduct,
-    why: createWhy(candidate.whyParts),
-    confidenceScore: confidenceFromScore(candidate.score),
-    status: "proposed",
-    metadata: {
-      ...candidate.metadata,
-      score: round(candidate.score),
-      dataSignals: {
-        totalCustomers: context.totalCustomers,
-        segmentCount: candidate.segment === "all" ? context.totalCustomers : segmentCount(context, candidate.segment),
-        bestMemorySegment,
-        bestMemoryCampaignType: bestMemoryType,
+  const items = selected.map((candidate, index) => {
+    const playbook = findCampaignPlaybookForRecommendation({
+      campaignType: candidate.campaignType,
+      title: candidate.title,
+      metadata: candidate.metadata,
+    });
+
+    return {
+      title: candidate.title,
+      campaignType: candidate.campaignType,
+      goal: candidate.goal,
+      segment: candidate.segment,
+      suggestedSendDate: sendDates[index],
+      subjectLineAngle: candidate.subjectLineAngle,
+      primaryProduct: candidate.primaryProduct,
+      why: createWhy(candidate.whyParts),
+      confidenceScore: confidenceFromScore(candidate.score),
+      status: "proposed",
+      metadata: {
+        ...candidate.metadata,
+        ...(playbook
+          ? {
+              playbookId: playbook.id,
+              playbookName: playbook.name,
+            }
+          : {}),
+        score: round(candidate.score),
+        dataSignals: {
+          totalCustomers: context.totalCustomers,
+          segmentCount: candidate.segment === "all" ? context.totalCustomers : segmentCount(context, candidate.segment),
+          bestMemorySegment,
+          bestMemoryCampaignType: bestMemoryType,
+        },
       },
-    },
-  }));
+    };
+  });
 
   const focusText = input.focus ? ` focused on ${input.focus}` : "";
   const dateText = `${formatPlanDate(input.startDate)} to ${formatPlanDate(input.endDate)}`;
