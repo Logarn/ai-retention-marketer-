@@ -104,6 +104,59 @@ export type MissingAudienceOpportunity = {
   priority: "high" | "medium" | "low";
 };
 
+export type AudienceQualityDimension = {
+  key: "source_availability" | "lifecycle_coverage" | "actionability" | "freshness" | "risk_control";
+  label: string;
+  score: number;
+  status: "strong" | "directional" | "weak";
+  evidence: string[];
+};
+
+export type AudienceDefinitionRecipe = {
+  key: LifecycleAudienceKey;
+  label: string;
+  priority: "high" | "medium" | "low";
+  readiness: "ready_to_build" | "needs_klaviyo_verification" | "needs_local_data" | "covered" | "not_enough_signal";
+  estimatedAudienceSize: number | null;
+  estimatedAudiencePercent: number | null;
+  sourceOfTruth: "local" | "klaviyo" | "combined" | "unknown";
+  definitionLogic: string[];
+  exclusionRules: string[];
+  activationUseCases: string[];
+  missingDependencies: string[];
+  confidence: "strong" | "directional" | "weak";
+};
+
+export type AudienceActivationMatrixItem = {
+  key: LifecycleAudienceKey;
+  label: string;
+  priority: "high" | "medium" | "low";
+  lifecycleMoment: string;
+  campaignUseCases: string[];
+  flowUseCases: string[];
+  productUseCases: string[];
+  doNotUseFor: string[];
+  evidence: string[];
+};
+
+export type AudienceSuppressionRisk = {
+  id: string;
+  label: string;
+  severity: "low" | "medium" | "high";
+  reason: string;
+  affectedAudienceKeys: LifecycleAudienceKey[];
+  recommendedSuppression: string[];
+  chartHintMetricKeys: string[];
+};
+
+export type NextAudienceQuestion = {
+  id: string;
+  question: string;
+  whyItMatters: string;
+  unlocks: string[];
+  priority: "high" | "medium" | "low";
+};
+
 export type SegmentAuditOutput = {
   ok: true;
   readOnly: true;
@@ -169,8 +222,17 @@ export type SegmentAuditOutput = {
     evidence: string[];
     recommendation: string;
   };
+  audienceQualityScorecard: AudienceQualityDimension[];
+  audienceBuildPlan: {
+    priorityOrder: LifecycleAudienceKey[];
+    recipes: AudienceDefinitionRecipe[];
+    nextBuilds: AudienceDefinitionRecipe[];
+  };
+  lifecycleActivationMatrix: AudienceActivationMatrixItem[];
+  suppressionRisks: AudienceSuppressionRisk[];
   duplicateOrOverlapRisks: AudienceDuplicateRisk[];
   missingAudienceOpportunities: MissingAudienceOpportunity[];
+  nextAudienceQuestions: NextAudienceQuestion[];
   insights: AuditInsight[];
   chartHints: AuditChartHint[];
   caveats: AuditCaveat[];
@@ -677,7 +739,15 @@ async function readLocalAudienceSignals(input: {
     caveats.push(caveat("Most local product-interest events could not be matched to Product records. Shopify/event sync may be needed for reliable product-interest audiences.", "product"));
   }
 
-  const productInterestAudiences = Array.from(productInterest.values())
+  const productInterestAudienceSignals = Array.from(productInterest.values())
+    .filter((item) => item.eventCount >= 3 || item.customers.size >= 2)
+    .sort((a, b) => b.customers.size - a.customers.size || b.eventCount - a.eventCount)
+    .slice(0, 8);
+  const productInterestCustomerIds = new Set<string>();
+  for (const item of productInterestAudienceSignals) {
+    for (const customerId of item.customers) productInterestCustomerIds.add(customerId);
+  }
+  const productInterestAudiences = productInterestAudienceSignals
     .map((item) => {
       const product = productDetails.get(item.productId);
       return {
@@ -689,9 +759,7 @@ async function readLocalAudienceSignals(input: {
         eventTypes: Array.from(item.eventTypes).sort(),
       };
     })
-    .filter((item) => item.eventCount >= 3 || item.uniqueCustomers >= 2)
-    .sort((a, b) => b.uniqueCustomers - a.uniqueCustomers || b.eventCount - a.eventCount)
-    .slice(0, 8);
+    .sort((a, b) => b.uniqueCustomers - a.uniqueCustomers || b.eventCount - a.eventCount);
 
   let productIntelligence: ProductPerformanceIntelligenceResult | null = null;
   try {
@@ -712,7 +780,7 @@ async function readLocalAudienceSignals(input: {
   const replenishmentProductCount =
     productIntelligence?.tiers.replenishmentCandidates.length ?? replenishmentProductNames.size;
   const replenishmentCount = Math.max(replenishmentCustomers.size, replenishmentProductCount > 0 ? replenishmentCustomers.size : 0);
-  const productInterestCount = productInterestAudiences.reduce((sum, item) => sum + item.uniqueCustomers, 0);
+  const productInterestCount = productInterestCustomerIds.size;
   const lifecycleAudiences = [
     signal("new_customers", customerIds.newCustomers.size, customers.length, `created or first purchased since ${input.timeframe.start.toISOString()}`, [
       `${customerIds.newCustomers.size} customers are new in the audit window.`,
@@ -1092,6 +1160,499 @@ function health(input: {
   };
 }
 
+function statusFromScore(value: number): "strong" | "directional" | "weak" {
+  if (value >= 80) return "strong";
+  if (value >= 55) return "directional";
+  return "weak";
+}
+
+function audienceQualityScorecard(input: {
+  inventory: KlaviyoAudienceInventory;
+  local: LocalAudienceRead;
+  coverageMap: Record<LifecycleAudienceKey, CoverageMapItem>;
+  broadRisk: ReturnType<typeof broadAudienceRisk>;
+  duplicateRisks: AudienceDuplicateRisk[];
+}): AudienceQualityDimension[] {
+  const coverageEntries = Object.values(input.coverageMap);
+  const covered = coverageEntries.filter((entry) => entry.status === "covered").length;
+  const partial = coverageEntries.filter((entry) => entry.status === "partial").length;
+  const missing = coverageEntries.filter((entry) => entry.status === "missing").length;
+  const actionable = coverageEntries.filter((entry) => (entry.localCount ?? 0) >= 5 && entry.status !== "unknown").length;
+  const freshnessKnown = input.inventory.available
+    ? input.inventory.count - input.inventory.unknownFreshnessAudiences.length
+    : 0;
+  const freshnessScore = input.inventory.available && input.inventory.count
+    ? score(((freshnessKnown - input.inventory.staleAudiences.length) / input.inventory.count) * 100)
+    : 35;
+  const sourceScore = score(
+    (input.local.available ? 45 : 0) +
+      (input.inventory.available ? 35 : 0) +
+      (input.local.dataQuality.sampleSize === "strong" ? 20 : input.local.dataQuality.sampleSize === "directional" ? 12 : 4),
+  );
+  const lifecycleScore = score(((covered * 100) + (partial * 55)) / Math.max(1, coverageEntries.length));
+  const actionabilityScore = score((actionable / Math.max(1, coverageEntries.length)) * 100);
+  const riskScore = score(
+    100 -
+      (input.broadRisk.level === "high" ? 35 : input.broadRisk.level === "medium" ? 18 : input.broadRisk.level === "unknown" ? 12 : 0) -
+      Math.min(30, input.duplicateRisks.length * 8),
+  );
+
+  return [
+    {
+      key: "source_availability",
+      label: "Source availability",
+      score: sourceScore,
+      status: statusFromScore(sourceScore),
+      evidence: [
+        input.local.available ? "Local customer/order/event data is available." : "Local audience data is unavailable or skipped.",
+        input.inventory.available ? "Klaviyo list/segment inventory is available." : "Klaviyo list/segment inventory is unavailable or skipped.",
+        `Local sample quality is ${input.local.dataQuality.sampleSize}.`,
+      ],
+    },
+    {
+      key: "lifecycle_coverage",
+      label: "Lifecycle coverage",
+      score: lifecycleScore,
+      status: statusFromScore(lifecycleScore),
+      evidence: [
+        `${covered} lifecycle buckets are covered.`,
+        `${partial} lifecycle buckets are partially covered.`,
+        `${missing} lifecycle buckets are missing.`,
+      ],
+    },
+    {
+      key: "actionability",
+      label: "Audience actionability",
+      score: actionabilityScore,
+      status: statusFromScore(actionabilityScore),
+      evidence: [
+        `${actionable} lifecycle buckets have enough local signal and known coverage status for action planning.`,
+        "Actionability stays directional when Klaviyo inventory is missing.",
+      ],
+    },
+    {
+      key: "freshness",
+      label: "Audience freshness",
+      score: freshnessScore,
+      status: statusFromScore(freshnessScore),
+      evidence: [
+        `${input.inventory.staleAudiences.length} Klaviyo audiences look stale.`,
+        `${input.inventory.unknownFreshnessAudiences.length} Klaviyo audiences have unknown freshness.`,
+      ],
+    },
+    {
+      key: "risk_control",
+      label: "Risk control",
+      score: riskScore,
+      status: statusFromScore(riskScore),
+      evidence: [
+        `Broad audience risk is ${input.broadRisk.level}.`,
+        `${input.duplicateRisks.length} duplicate or overlap risks were detected.`,
+      ],
+    },
+  ];
+}
+
+const AUDIENCE_RECIPE_LOGIC: Record<LifecycleAudienceKey, {
+  definitionLogic: string[];
+  exclusionRules: string[];
+  activationUseCases: string[];
+}> = {
+  new_customers: {
+    definitionLogic: [
+      "Customer created or first ordered inside the selected audit window.",
+      "Use firstOrderDate when available, otherwise customer createdAt as a fallback.",
+    ],
+    exclusionRules: [
+      "Exclude repeat buyers after their second order.",
+      "Exclude customers already in winback or inactive audiences.",
+    ],
+    activationUseCases: [
+      "Welcome education",
+      "First-to-second purchase campaigns",
+      "Onboarding flow QA",
+    ],
+  },
+  one_time_buyers: {
+    definitionLogic: [
+      "Customer has exactly one completed purchase.",
+      "Prioritize customers whose first purchase is outside immediate welcome timing.",
+    ],
+    exclusionRules: [
+      "Exclude repeat buyers and VIP customers.",
+      "Exclude customers inside active cart or checkout abandon windows.",
+    ],
+    activationUseCases: [
+      "Second purchase campaign",
+      "Post-purchase cross-sell",
+      "Review and education follow-up",
+    ],
+  },
+  repeat_buyers: {
+    definitionLogic: [
+      "Customer has two or more completed purchases.",
+      "Optionally split 2x buyers from 3x+ loyalists later.",
+    ],
+    exclusionRules: [
+      "Exclude VIP customers when offers or early access differ.",
+      "Exclude recently purchased customers from discount-heavy campaigns.",
+    ],
+    activationUseCases: [
+      "Loyalty campaigns",
+      "Cross-sell and bundle recommendations",
+      "Category expansion",
+    ],
+  },
+  vip_customers: {
+    definitionLogic: [
+      "Customer meets high spend or high order-frequency thresholds from local customer distribution.",
+      "Default v0 threshold uses top spend/order quantiles from local data.",
+    ],
+    exclusionRules: [
+      "Exclude from heavy winback discounts unless they are truly lapsed.",
+      "Exclude from broad promos that train high-value customers to wait.",
+    ],
+    activationUseCases: [
+      "VIP early access",
+      "Founder notes",
+      "Premium product launches",
+    ],
+  },
+  inactive_customers: {
+    definitionLogic: [
+      "Customer has purchase history but no purchase in at least 180 days.",
+      "Use lastOrderDate where available.",
+    ],
+    exclusionRules: [
+      "Exclude recent purchasers.",
+      "Exclude active replenishment candidates until reorder window passes.",
+    ],
+    activationUseCases: [
+      "Low-cost reactivation",
+      "Sunset/list hygiene",
+      "Winback flow split",
+    ],
+  },
+  at_risk_customers: {
+    definitionLogic: [
+      "Customer has churnRiskScore >= 60 or last purchase is 90-179 days ago.",
+      "Use engagement and browse trend once profile sync makes those properties durable.",
+    ],
+    exclusionRules: [
+      "Exclude customers who purchased very recently.",
+      "Exclude hard-lapsed winback candidates when messaging differs.",
+    ],
+    activationUseCases: [
+      "At-risk save campaign",
+      "Value reinforcement",
+      "Pre-winback flow branch",
+    ],
+  },
+  winback_candidates: {
+    definitionLogic: [
+      "Customer has purchase history and last purchase is at least 180 days ago.",
+      "Separate from inactive-only newsletter audiences when offers differ.",
+    ],
+    exclusionRules: [
+      "Exclude active customers and recent purchasers.",
+      "Exclude customers already in a sunset/suppression path.",
+    ],
+    activationUseCases: [
+      "Winback campaign",
+      "Reactivation flow",
+      "Sunset decisioning",
+    ],
+  },
+  replenishment_candidates: {
+    definitionLogic: [
+      "Customer bought a product with avgReplenishmentDays and is near that reorder window.",
+      "Use Product Performance Intelligence replenishment candidates when available.",
+    ],
+    exclusionRules: [
+      "Exclude customers who reordered after the predicted window.",
+      "Exclude non-replenishable categories.",
+    ],
+    activationUseCases: [
+      "Replenishment flow",
+      "Restock reminders",
+      "Post-purchase lifecycle split",
+    ],
+  },
+  product_interest: {
+    definitionLogic: [
+      "Customer viewed, browsed, carted, or otherwise showed intent for a product/category.",
+      "Use product_view and add_to_cart events that can be matched to Product records.",
+    ],
+    exclusionRules: [
+      "Exclude customers who purchased the same product recently.",
+      "Exclude checkout/cart abandon audiences when they are in a higher-intent window.",
+    ],
+    activationUseCases: [
+      "Browse abandon",
+      "Product spotlight",
+      "Category-specific campaigns",
+    ],
+  },
+};
+
+function priorityForAudience(key: LifecycleAudienceKey, localCount: number | null): "high" | "medium" | "low" {
+  if (["vip_customers", "one_time_buyers", "winback_candidates", "replenishment_candidates"].includes(key)) {
+    return (localCount ?? 0) >= 5 ? "high" : "medium";
+  }
+  if (["repeat_buyers", "at_risk_customers", "product_interest"].includes(key)) return "medium";
+  return "low";
+}
+
+function audienceBuildPlan(input: {
+  inventory: KlaviyoAudienceInventory;
+  local: LocalAudienceRead;
+  coverageMap: Record<LifecycleAudienceKey, CoverageMapItem>;
+}) {
+  const recipes = Object.values(input.coverageMap).map((entry): AudienceDefinitionRecipe => {
+    const recipe = AUDIENCE_RECIPE_LOGIC[entry.key];
+    const localCount = entry.localCount;
+    const priority = priorityForAudience(entry.key, localCount);
+    const hasLocalSignal = localCount !== null && localCount > 0;
+    const readiness: AudienceDefinitionRecipe["readiness"] = entry.status === "covered"
+      ? "covered"
+      : !input.local.available
+        ? "needs_local_data"
+        : !input.inventory.available
+          ? "needs_klaviyo_verification"
+          : hasLocalSignal
+            ? "ready_to_build"
+            : "not_enough_signal";
+    const sourceOfTruth: AudienceDefinitionRecipe["sourceOfTruth"] =
+      input.local.available && input.inventory.available
+        ? "combined"
+        : input.local.available
+          ? "local"
+          : input.inventory.available
+            ? "klaviyo"
+            : "unknown";
+
+    return {
+      key: entry.key,
+      label: entry.label,
+      priority,
+      readiness,
+      estimatedAudienceSize: localCount,
+      estimatedAudiencePercent: entry.localPercent,
+      sourceOfTruth,
+      definitionLogic: recipe.definitionLogic,
+      exclusionRules: recipe.exclusionRules,
+      activationUseCases: recipe.activationUseCases,
+      missingDependencies: [
+        ...(!input.inventory.available ? ["Klaviyo list/segment read access"] : []),
+        ...(!input.local.available ? ["Local customer/order/event data"] : []),
+        ...(entry.key === "product_interest" && !input.local.dataQuality.eventsAvailable ? ["Matched product-interest events"] : []),
+        ...(entry.key === "replenishment_candidates" && !input.local.dataQuality.productDataAvailable ? ["Product cadence data"] : []),
+      ],
+      confidence: entry.confidence,
+    };
+  });
+
+  const readinessWeight: Record<AudienceDefinitionRecipe["readiness"], number> = {
+    ready_to_build: 5,
+    needs_klaviyo_verification: 4,
+    covered: 3,
+    needs_local_data: 2,
+    not_enough_signal: 1,
+  };
+  const priorityWeight = { high: 3, medium: 2, low: 1 };
+  const sorted = [...recipes].sort((a, b) =>
+    readinessWeight[b.readiness] - readinessWeight[a.readiness] ||
+    priorityWeight[b.priority] - priorityWeight[a.priority] ||
+    (b.estimatedAudienceSize ?? 0) - (a.estimatedAudienceSize ?? 0),
+  );
+
+  return {
+    priorityOrder: sorted.map((recipe) => recipe.key),
+    recipes,
+    nextBuilds: sorted.filter((recipe) => recipe.readiness === "ready_to_build" || recipe.readiness === "needs_klaviyo_verification").slice(0, 5),
+  };
+}
+
+function lifecycleActivationMatrix(input: {
+  local: LocalAudienceRead;
+  coverageMap: Record<LifecycleAudienceKey, CoverageMapItem>;
+}): AudienceActivationMatrixItem[] {
+  return Object.values(input.coverageMap).map((entry) => {
+    const recipe = AUDIENCE_RECIPE_LOGIC[entry.key];
+    const priority = priorityForAudience(entry.key, entry.localCount);
+    const productUseCases = entry.key === "product_interest"
+      ? input.local.productInterestAudiences.slice(0, 5).map((item) => `${item.name}: ${item.uniqueCustomers} interested customers`)
+      : entry.key === "replenishment_candidates"
+        ? ["Use replenishable products from Product Performance Intelligence and avgReplenishmentDays."]
+        : [];
+
+    return {
+      key: entry.key,
+      label: entry.label,
+      priority,
+      lifecycleMoment: entry.key.includes("winback") || entry.key.includes("inactive")
+        ? "reactivation"
+        : entry.key.includes("vip") || entry.key.includes("repeat")
+          ? "loyalty"
+          : entry.key.includes("new") || entry.key.includes("one_time")
+            ? "post-purchase"
+            : entry.key.includes("product") || entry.key.includes("replenishment")
+              ? "intent and reorder"
+              : "retention",
+      campaignUseCases: recipe.activationUseCases.filter((item) => !normalizeText(item).includes("flow")),
+      flowUseCases: recipe.activationUseCases.filter((item) => normalizeText(item).includes("flow")),
+      productUseCases,
+      doNotUseFor: recipe.exclusionRules,
+      evidence: [
+        `Coverage status: ${entry.status}.`,
+        entry.localCount === null ? "Local audience size is unavailable." : `Local audience size: ${entry.localCount}.`,
+      ],
+    };
+  });
+}
+
+function suppressionRisks(input: {
+  coverageMap: Record<LifecycleAudienceKey, CoverageMapItem>;
+  broadRisk: ReturnType<typeof broadAudienceRisk>;
+  duplicateRisks: AudienceDuplicateRisk[];
+}): AudienceSuppressionRisk[] {
+  const risks: AudienceSuppressionRisk[] = [];
+  const oneTime = input.coverageMap.one_time_buyers;
+  const repeat = input.coverageMap.repeat_buyers;
+  const activeBuyerKeys: LifecycleAudienceKey[] = ["new_customers", "one_time_buyers", "repeat_buyers", "vip_customers"];
+
+  if (oneTime.status !== "covered" || repeat.status !== "covered") {
+    risks.push({
+      id: "suppress_repeat_from_second_purchase",
+      label: "Second-purchase targeting can bleed into repeat buyers",
+      severity: "medium",
+      reason: "One-time and repeat buyer audiences are not both clearly covered, so second-purchase campaigns may reach customers who already converted.",
+      affectedAudienceKeys: ["one_time_buyers", "repeat_buyers"],
+      recommendedSuppression: [
+        "Suppress repeat buyers from one-time buyer conversion campaigns.",
+        "Suppress recent purchasers from second-purchase reminders.",
+      ],
+      chartHintMetricKeys: ["one_time_buyers", "repeat_buyers"],
+    });
+  }
+
+  if (input.coverageMap.winback_candidates.status !== "covered" || input.coverageMap.at_risk_customers.status !== "covered") {
+    risks.push({
+      id: "suppress_active_buyers_from_winback",
+      label: "Winback targeting needs active-buyer suppression",
+      severity: "high",
+      reason: "At-risk and winback coverage is incomplete, so reactivation logic could accidentally include active or recently purchased customers.",
+      affectedAudienceKeys: ["at_risk_customers", "winback_candidates", ...activeBuyerKeys],
+      recommendedSuppression: [
+        "Suppress customers with a purchase inside the last 30-60 days from winback.",
+        "Suppress active repeat/VIP customers from lapsed-customer discounting.",
+      ],
+      chartHintMetricKeys: ["at_risk_customers", "winback_candidates", "recent_purchasers"],
+    });
+  }
+
+  if (input.coverageMap.vip_customers.status !== "covered") {
+    risks.push({
+      id: "protect_vips_from_broad_discounts",
+      label: "VIP customers need offer protection",
+      severity: "medium",
+      reason: "VIP coverage is not clearly detected, so broad discount campaigns may train high-value customers to wait for promos.",
+      affectedAudienceKeys: ["vip_customers"],
+      recommendedSuppression: [
+        "Suppress VIP customers from margin-dilutive broad promotions unless the campaign is explicitly VIP-only.",
+        "Route VIPs to early access, exclusivity, or founder-note variants.",
+      ],
+      chartHintMetricKeys: ["vip_customers", "broad_discount_exposure"],
+    });
+  }
+
+  if (input.broadRisk.level === "high" || input.broadRisk.level === "medium") {
+    risks.push({
+      id: "broad_lists_need_lifecycle_suppressions",
+      label: "Broad lists need lifecycle suppressions",
+      severity: input.broadRisk.level === "high" ? "high" : "medium",
+      reason: "Broad-list targeting risk is elevated, so campaign blasts should use lifecycle suppressions before scaling.",
+      affectedAudienceKeys: activeBuyerKeys.concat(["inactive_customers", "winback_candidates"]),
+      recommendedSuppression: [
+        "Suppress customers currently in checkout/cart abandon windows from broad campaigns.",
+        "Suppress recent purchasers when the message is not post-purchase relevant.",
+        "Split inactive/winback audiences out of active-customer newsletters.",
+      ],
+      chartHintMetricKeys: ["broad_audiences", "covered_lifecycle_audiences"],
+    });
+  }
+
+  if (input.duplicateRisks.length) {
+    risks.push({
+      id: "duplicate_audiences_need_source_of_truth",
+      label: "Duplicate audiences need source-of-truth selection",
+      severity: "medium",
+      reason: "Duplicate or overlapping audience names can create inconsistent suppressions and noisy reporting.",
+      affectedAudienceKeys: Object.values(input.coverageMap)
+        .filter((entry) => entry.klaviyoMatches.length > 1)
+        .map((entry) => entry.key),
+      recommendedSuppression: [
+        "Pick one source-of-truth audience per lifecycle role before using it for suppressions.",
+        "Archive or label duplicates after manual verification.",
+      ],
+      chartHintMetricKeys: ["duplicate_audiences", "overlap_risks"],
+    });
+  }
+
+  return risks;
+}
+
+function nextAudienceQuestions(input: {
+  inventory: KlaviyoAudienceInventory;
+  local: LocalAudienceRead;
+  buildPlan: ReturnType<typeof audienceBuildPlan>;
+  suppressionRisks: AudienceSuppressionRisk[];
+}): NextAudienceQuestion[] {
+  const questions: NextAudienceQuestion[] = [];
+
+  if (!input.inventory.available) {
+    questions.push({
+      id: "klaviyo_audience_access",
+      question: "Which Klaviyo lists and segments should Worklin treat as the current source of truth?",
+      whyItMatters: "The local audit can estimate lifecycle audiences, but it cannot confirm live Klaviyo coverage without readable inventory.",
+      unlocks: ["Retention Audit Workflow v0", "audience coverage QA", "cleaner action plans"],
+      priority: "high",
+    });
+  }
+
+  if (!input.local.dataQuality.eventsAvailable) {
+    questions.push({
+      id: "product_intent_events",
+      question: "Are product view and add-to-cart events syncing into local CustomerEvent data consistently?",
+      whyItMatters: "Product-interest audiences are weak without matched browse/cart intent.",
+      unlocks: ["browse abandon QA", "product spotlight campaigns", "category-specific targeting"],
+      priority: "medium",
+    });
+  }
+
+  if (input.buildPlan.nextBuilds.some((recipe) => recipe.key === "replenishment_candidates")) {
+    questions.push({
+      id: "replenishment_rules",
+      question: "Which products should be treated as replenishable, and what reorder windows should Worklin trust?",
+      whyItMatters: "Replenishment audiences should be product-cadence specific, not generic lapsed-buyer targeting.",
+      unlocks: ["replenishment flow audit", "restock campaigns", "post-purchase timing"],
+      priority: "high",
+    });
+  }
+
+  if (input.suppressionRisks.some((risk) => risk.severity === "high")) {
+    questions.push({
+      id: "suppression_policy",
+      question: "What suppressions are non-negotiable before Worklin recommends winback, broad campaigns, or VIP offers?",
+      whyItMatters: "Audience build quality depends as much on exclusions as inclusions.",
+      unlocks: ["safer campaign audit action plans", "offer protection", "lower list fatigue"],
+      priority: "high",
+    });
+  }
+
+  return questions.slice(0, 5);
+}
+
 function entityFromAudience(audience: KlaviyoAudience) {
   return {
     id: audience.id,
@@ -1111,6 +1672,7 @@ function buildInsights(input: {
   coverageMap: Record<LifecycleAudienceKey, CoverageMapItem>;
   broadRisk: ReturnType<typeof broadAudienceRisk>;
   duplicateRisks: AudienceDuplicateRisk[];
+  suppressionRisks: AudienceSuppressionRisk[];
   missingOpportunities: MissingAudienceOpportunity[];
   overallHealth: ReturnType<typeof health>;
 }): AuditInsight[] {
@@ -1425,6 +1987,38 @@ function buildInsights(input: {
     });
   }
 
+  if (input.suppressionRisks.some((risk) => risk.severity === "high")) {
+    insights.push({
+      id: "segment_protect_suppression_guardrails",
+      title: "Suppression guardrails need to be explicit",
+      summary: "Audience coverage gaps create risk that winback, broad-list, or VIP campaigns could reach the wrong lifecycle state unless suppressions are defined.",
+      domain: "segment",
+      insightType: "protect",
+      severity: "warning",
+      confidence: "directional",
+      evidence: input.suppressionRisks.slice(0, 5).map((risk) => ({
+        type: "segment",
+        label: risk.reason,
+        value: risk.severity,
+        source: risk.label,
+      })),
+      caveats,
+      recommendedActions: [{
+        label: "Define suppression rules for recent purchasers, repeat buyers, VIPs, and active abandon windows before turning audit findings into action plans.",
+        actionType: "protect",
+        priority: "high",
+      }],
+      chartHints: [
+        createChartHint({
+          type: "table",
+          title: "Suppression guardrail risks",
+          metricKeys: input.suppressionRisks.flatMap((risk) => risk.chartHintMetricKeys).slice(0, 10),
+          entityIds: [],
+        }),
+      ],
+    });
+  }
+
   if (input.inventory.staleAudiences.length || input.inventory.unknownFreshnessAudiences.length) {
     insights.push({
       id: "segment_audit_freshness_unknown_or_stale",
@@ -1544,6 +2138,26 @@ export async function auditSegments(input: SegmentAuditInput = {}): Promise<Segm
   const duplicateOrOverlapRisks = duplicateRisks(audiences, coverageMap);
   const missingAudienceOpportunities = missingOpportunities(coverageMap);
   const broadRisk = broadAudienceRisk({ inventory, coverageMap });
+  const suppressionRiskList = suppressionRisks({
+    coverageMap,
+    broadRisk,
+    duplicateRisks: duplicateOrOverlapRisks,
+  });
+  const qualityScorecard = audienceQualityScorecard({
+    inventory,
+    local,
+    coverageMap,
+    broadRisk,
+    duplicateRisks: duplicateOrOverlapRisks,
+  });
+  const buildPlan = audienceBuildPlan({ inventory, local, coverageMap });
+  const activationMatrix = lifecycleActivationMatrix({ local, coverageMap });
+  const audienceQuestions = nextAudienceQuestions({
+    inventory,
+    local,
+    buildPlan,
+    suppressionRisks: suppressionRiskList,
+  });
   const overallAudienceHealth = health({
     inventory,
     local,
@@ -1557,6 +2171,7 @@ export async function auditSegments(input: SegmentAuditInput = {}): Promise<Segm
     coverageMap,
     broadRisk,
     duplicateRisks: duplicateOrOverlapRisks,
+    suppressionRisks: suppressionRiskList,
     missingOpportunities: missingAudienceOpportunities,
     overallHealth: overallAudienceHealth,
   });
@@ -1573,6 +2188,24 @@ export async function auditSegments(input: SegmentAuditInput = {}): Promise<Segm
       type: "table",
       title: "Lifecycle audience coverage map",
       metricKeys: AUDIENCE_DEFINITIONS.map((definition) => definition.key),
+      entityIds: [],
+    }),
+    createChartHint({
+      type: "heatmap",
+      title: "Audience quality scorecard",
+      metricKeys: qualityScorecard.map((dimension) => dimension.key),
+      entityIds: [],
+    }),
+    createChartHint({
+      type: "table",
+      title: "Audience build plan",
+      metricKeys: ["priority", "readiness", "estimated_audience_size", "confidence"],
+      entityIds: buildPlan.nextBuilds.map((recipe) => recipe.key),
+    }),
+    createChartHint({
+      type: "table",
+      title: "Suppression guardrails",
+      metricKeys: suppressionRiskList.flatMap((risk) => risk.chartHintMetricKeys).slice(0, 12),
       entityIds: [],
     }),
     ...collectAuditChartHints(insights),
@@ -1610,8 +2243,13 @@ export async function auditSegments(input: SegmentAuditInput = {}): Promise<Segm
     klaviyoAudienceInventory: inventory,
     localAudienceSignals: local,
     broadAudienceRisk: broadRisk,
+    audienceQualityScorecard: qualityScorecard,
+    audienceBuildPlan: buildPlan,
+    lifecycleActivationMatrix: activationMatrix,
+    suppressionRisks: suppressionRiskList,
     duplicateOrOverlapRisks,
     missingAudienceOpportunities,
+    nextAudienceQuestions: audienceQuestions,
     insights,
     chartHints,
     caveats,
