@@ -215,10 +215,7 @@ function recommendedFromCandidates(candidates: KlaviyoMetricCandidate[]): Recomm
   const recommended = candidates.find((candidate) =>
     candidate.recommendedFor === "primary_conversion" &&
     candidate.candidateType !== "order_like" &&
-    candidate.score >= 70,
-  ) ?? candidates.find((candidate) =>
-    candidate.candidateType === "order_like" &&
-    candidate.score >= 45,
+    candidate.confidence === "strong",
   );
 
   if (!recommended) return null;
@@ -251,8 +248,12 @@ function discoveryCaveats(input: {
 
   const orderedProduct = input.candidates.find((candidate) => candidate.candidateType === "ordered_product");
   const placedOrder = input.candidates.find((candidate) => candidate.candidateType === "placed_order");
+  const orderLike = input.candidates.find((candidate) => candidate.candidateType === "order_like");
   if (orderedProduct && !placedOrder) {
     caveats.push("Ordered Product was detected without Placed Order; item-level metrics may not be safe for revenue conversion reporting.");
+  }
+  if (orderLike && !placedOrder) {
+    caveats.push("Order-like metrics were detected but require manual verification before use as a conversion metric.");
   }
 
   if (!input.recommendedMetric) {
