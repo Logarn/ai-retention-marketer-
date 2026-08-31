@@ -67,10 +67,18 @@ export function App() {
     } else {
       setScreen({ name: 'welcome' });
     }
-  }, [session.loading, session.mode, session.session, session.selectedAssistant, session.selfHostedPaired]);
+  }, [
+    session.loading,
+    session.mode,
+    session.session,
+    session.selectedAssistant,
+    session.selfHostedPaired,
+  ]);
 
   // Poll status when on the main screen
-  const { health, healthDetail, authProfile } = useStatusPoll(screen.name === 'main');
+  const { health, healthDetail, authProfile, browserControl } = useStatusPoll(
+    screen.name === 'main',
+  );
 
   // Refresh activity count when on the main screen (poll every 2s)
   useEffect(() => {
@@ -101,7 +109,11 @@ export function App() {
       error?: string;
     }>({ type: 'list-assistants' }).then((response) => {
       if (response?.ok && response.assistants) {
-        setScreen({ name: 'picker', assistants: response.assistants, email: cloudEmail });
+        setScreen({
+          name: 'picker',
+          assistants: response.assistants,
+          email: cloudEmail,
+        });
       }
     });
   }, [health, cloudEmail]);
@@ -175,18 +187,20 @@ export function App() {
     setScreen({ name: 'main' });
   }, []);
 
-  const handleSelectAssistant = useCallback(
-    (id: string, name: string) => {
-      setMode('cloud');
-      sendMessage({ type: 'select-assistant', assistantId: id, assistantName: name });
-      setScreen({ name: 'main' });
-      sendMessage({ type: 'connect' });
-    },
-    [],
-  );
+  const handleSelectAssistant = useCallback((id: string, name: string) => {
+    setMode('cloud');
+    sendMessage({
+      type: 'select-assistant',
+      assistantId: id,
+      assistantName: name,
+    });
+    setScreen({ name: 'main' });
+    sendMessage({ type: 'connect' });
+  }, []);
 
   const handleSignOut = useCallback(() => {
-    const msgType = mode === 'self-hosted' ? 'self-hosted-disconnect' : 'cloud-logout';
+    const msgType =
+      mode === 'self-hosted' ? 'self-hosted-disconnect' : 'cloud-logout';
     sendMessage({ type: msgType }).then(() => {
       setMode(null);
       setAssistantsError(null);
@@ -216,6 +230,7 @@ export function App() {
       health,
       healthDetail,
       authProfile,
+      browserControl,
       operationCount,
       selfHostedPaired,
       assistantsError,
@@ -223,7 +238,18 @@ export function App() {
       onSignOut: handleSignOut,
       onRetryAssistants: handleRetryAssistants,
     }),
-    [mode, health, healthDetail, authProfile, operationCount, selfHostedPaired, assistantsError, handleSignOut, handleRetryAssistants],
+    [
+      mode,
+      health,
+      healthDetail,
+      authProfile,
+      browserControl,
+      operationCount,
+      selfHostedPaired,
+      assistantsError,
+      handleSignOut,
+      handleRetryAssistants,
+    ],
   );
 
   if (session.loading) {

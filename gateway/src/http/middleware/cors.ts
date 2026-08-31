@@ -64,14 +64,14 @@ export function resolveExtensionOrigin(req: Request): string | null {
 export function extensionCorsHeaders(origin: string): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": origin,
-    // GET for SSE (/v1/events), POST for pair + host-browser callbacks
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
     // All headers the extension service worker sends across these routes:
     //   /v1/pair          → content-type, x-vellum-interface-id
     //   /v1/events (SSE)  → accept, x-vellum-client-id, x-vellum-interface-id
     //   /v1/host-browser-* → content-type, authorization
+    //   /v1/browser-broker/* → connection token, cursor, auth
     "Access-Control-Allow-Headers":
-      "Accept, Authorization, Content-Type, X-Vellum-Client-Id, X-Vellum-Interface-Id",
+      "Accept, Authorization, Content-Type, Last-Event-ID, X-Session-Token, Vellum-Organization-Id, X-Vellum-Client-Id, X-Vellum-Interface-Id, X-Worklin-Browser-Connection-Token",
     "Access-Control-Allow-Private-Network": "true",
     "Access-Control-Max-Age": "86400",
   };

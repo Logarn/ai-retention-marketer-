@@ -189,6 +189,8 @@ interface ChromeTab {
   pinned?: boolean;
   title?: string;
   index?: number;
+  width?: number;
+  height?: number;
 }
 
 interface ChromeTabsQueryInfo {
@@ -219,8 +221,18 @@ interface ChromeTabsCaptureVisibleTabOptions {
 }
 
 interface ChromeTabsOnRemovedEvent {
-  addListener(listener: (tabId: number, removeInfo: { windowId: number; isWindowClosing: boolean }) => void): void;
-  removeListener(listener: (tabId: number, removeInfo: { windowId: number; isWindowClosing: boolean }) => void): void;
+  addListener(
+    listener: (
+      tabId: number,
+      removeInfo: { windowId: number; isWindowClosing: boolean },
+    ) => void,
+  ): void;
+  removeListener(
+    listener: (
+      tabId: number,
+      removeInfo: { windowId: number; isWindowClosing: boolean },
+    ) => void,
+  ): void;
 }
 
 interface ChromeTabsNamespace {
@@ -339,6 +351,11 @@ interface ChromeActionSetIconDetails {
 
 interface ChromeActionNamespace {
   setIcon(details: ChromeActionSetIconDetails): Promise<void>;
+  setBadgeText(details: { text: string; tabId?: number }): Promise<void>;
+  setBadgeBackgroundColor(details: {
+    color: string | [number, number, number, number];
+    tabId?: number;
+  }): Promise<void>;
 }
 
 interface ChromeGlobal {

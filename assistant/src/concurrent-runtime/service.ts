@@ -6,6 +6,7 @@ import {
   tenantExecutionScopeKey,
 } from "@vellumai/service-contracts/tenant-context";
 
+import type { BrowserBrokerService } from "./browser-broker/service.js";
 import { FairTenantScheduler } from "./fair-scheduler.js";
 import type { ConcurrentRuntimeStore } from "./store.js";
 import type { ConcurrentTurnExecutor } from "./turn-executor.js";
@@ -33,6 +34,7 @@ export interface ConcurrentRuntimeServiceOptions {
   leaseRenewIntervalMs?: number;
   workerId?: string;
   logger?: ConcurrentRuntimeLogger;
+  browserBrokerService?: BrowserBrokerService;
 }
 
 export class ConcurrentRuntimeService {
@@ -43,6 +45,7 @@ export class ConcurrentRuntimeService {
   private readonly leaseRenewIntervalMs: number;
   private readonly workerId: string;
   private readonly logger: ConcurrentRuntimeLogger;
+  private readonly browserBrokerService?: BrowserBrokerService;
   private readonly activeAbortControllers = new Map<string, AbortController>();
   private readonly scheduledRuns = new Set<string>();
   private readonly conversationTails = new Map<string, Promise<void>>();
@@ -62,6 +65,7 @@ export class ConcurrentRuntimeService {
       Math.max(1_000, Math.floor(options.leaseDurationMs / 3));
     this.workerId = options.workerId ?? randomUUID();
     this.logger = options.logger ?? defaultLogger;
+    this.browserBrokerService = options.browserBrokerService;
     this.scheduler = new FairTenantScheduler({
       maxConcurrent: options.maxConcurrentTurns,
       maxConcurrentPerTenant: options.maxConcurrentTurnsPerTenant,
@@ -125,6 +129,22 @@ export class ConcurrentRuntimeService {
     await this.scheduler.onIdle();
   }
 
+  async resumeRun(
+    context: TenantExecutionContext,
+    runId: string,
+  ): Promise<void> {
+    const run = await this.store.getRun(context, runId);
+    if (!run || run.status !== "queued") return;
+    this.schedule(
+      {
+        ...context,
+        conversationId: run.conversationId,
+        idempotencyKey: run.idempotencyKey,
+      },
+      runId,
+    );
+  }
+
   schedulerSnapshot(): {
     active: number;
     pending: number;
@@ -170,6 +190,8 @@ export class ConcurrentRuntimeService {
     this.activeAbortControllers.set(runKey, abortController);
     let activityVersion = 1;
     let renewFailed = false;
+    let parkedForBrowser = false;
+    let terminal = false;
 
     const renewalTimer = setInterval(() => {
       void this.store
@@ -180,12 +202,13 @@ export class ConcurrentRuntimeService {
           Date.now() + this.leaseDurationMs,
         )
         .then((renewed) => {
-          if (!renewed) {
+          if (!renewed && !parkedForBrowser) {
             renewFailed = true;
             abortController.abort();
           }
         })
         .catch((error) => {
+          if (parkedForBrowser) return;
           renewFailed = true;
           this.logger.error(
             { error, runId, conversationId },
@@ -212,9 +235,17 @@ export class ConcurrentRuntimeService {
       });
 
       let receivedTextDelta = false;
-      const content = await this.executor.execute({
+      const grant = this.browserBrokerService
+        ? await this.store.getBrowserAccessGrant(
+            executionContext,
+            conversationId,
+          )
+        : null;
+      const execution = await this.executor.execute({
         context: executionContext,
         messages: claimed.messages,
+        steps: claimed.steps,
+        browserEnabled: grant?.enabled === true,
         signal: abortController.signal,
         callbacks: {
           onTextDelta: async (text) => {
@@ -244,11 +275,53 @@ export class ConcurrentRuntimeService {
         throw new Error("Concurrent runtime lease was lost.");
       }
 
+      const normalizedExecution =
+        typeof execution === "string"
+          ? ({ kind: "complete", content: execution } as const)
+          : execution;
+      if (normalizedExecution.kind === "browser_action") {
+        if (!this.browserBrokerService) {
+          throw new Error("Browser broker is unavailable for this runtime.");
+        }
+        const browserStepCount = claimed.steps.filter(
+          (step) => step.stepKind === "provider_response",
+        ).length;
+        if (browserStepCount >= 12) {
+          throw new Error("Browser action budget was exhausted for this turn.");
+        }
+        const dispatched = await this.browserBrokerService.dispatch(
+          executionContext,
+          {
+            conversationId,
+            runId,
+            toolUseId: normalizedExecution.toolUseId,
+            operation: normalizedExecution.operation,
+            leaseOwner,
+            providerContent: normalizedExecution.providerContent,
+            executionConfig: normalizedExecution.executionConfig,
+          },
+        );
+        parkedForBrowser = true;
+        activityVersion += 1;
+        await this.store.appendEvent(executionContext, conversationId, {
+          type: "assistant_activity_state",
+          conversationId,
+          activityVersion,
+          phase: "waiting",
+          anchor: "assistant_turn",
+          reason: "browser_action_dispatched",
+          requestId: claimed.run.requestId,
+          actionId: dispatched.action.actionId,
+        });
+        return;
+      }
+
       await this.store.completeRun(executionContext, runId, {
         assistantMessageId,
-        content,
+        content: normalizedExecution.content,
         leaseOwner,
       });
+      terminal = true;
       await this.store.appendEvent(executionContext, conversationId, {
         type: "message_complete",
         messageId: assistantMessageId,
@@ -267,10 +340,13 @@ export class ConcurrentRuntimeService {
       });
     } catch (error) {
       const current = await this.store.getRun(executionContext, runId);
-      if (current?.status !== "cancelled") {
+      if (
+        current?.status !== "cancelled" &&
+        current?.status !== "waiting_for_browser"
+      ) {
         const message =
           error instanceof Error ? error.message : "Assistant turn failed.";
-        await this.store.failRun(executionContext, runId, {
+        terminal = await this.store.failRun(executionContext, runId, {
           errorCode: renewFailed ? "lease_lost" : "turn_failed",
           errorMessage: message,
           leaseOwner,
@@ -286,6 +362,22 @@ export class ConcurrentRuntimeService {
     } finally {
       clearInterval(renewalTimer);
       this.activeAbortControllers.delete(runKey);
+      if (terminal) {
+        const next = await this.store.getNextQueuedRun(
+          executionContext,
+          conversationId,
+        );
+        if (next) {
+          this.schedule(
+            {
+              ...executionContext,
+              conversationId,
+              idempotencyKey: next.idempotencyKey,
+            },
+            next.id,
+          );
+        }
+      }
     }
   }
 

@@ -28,6 +28,7 @@ bash build.sh
 ```
 
 Then in Chrome:
+
 1. Open `chrome://extensions`
 2. Enable **Developer mode**
 3. Click **Load unpacked**
@@ -66,6 +67,36 @@ For automated publishing, the `release.yml` GitHub Actions workflow builds, pack
 
 That's it. The extension auto-reconnects on browser restarts, network drops, and assistant restarts. Click **Pause** to intentionally stop the relay.
 
+### Concurrent browser control
+
+When the selected assistant advertises `browser_broker_v1`, the service worker
+also opens a dedicated, resumable browser-broker event stream. The assistant
+can use it only after browser access is enabled for that exact conversation and
+extension installation. The broker opens a new leased tab; it never adopts an
+arbitrary signed-in tab or exposes raw Chrome DevTools Protocol access.
+
+To enable it, open a saved Worklin conversation in the active tab, open the
+extension popup, and choose **Enable** under **Browser use**. The popup binds
+that conversation to this exact extension installation. If another installation
+was selected, the popup shows that state and requires an explicit
+**Use this browser** action; it never chooses a recently seen browser
+automatically. Draft conversations must be saved by sending their first message
+before browser access can be granted.
+
+The popup displays whether the assistant or the user owns the leased tab. Use
+**Take over browser** before interacting manually and **Resume assistant** to
+return control. Either transition invalidates prior element references so a
+stale click or type cannot be applied to a changed page.
+
+Browser control is intentionally narrower than the extension's existing relay:
+HTTPS public sites only; no localhost or private networks; no password,
+payment, one-time-code, upload, download, cookie, or browser-settings access.
+Action hashes and coarse terminal state are journaled briefly for replay
+safety. Raw terminal payloads use the short-lived browser-session storage
+cache, not durable local or normal assistant activity storage. The connection
+resume credential is also session-only; durable storage contains only
+non-secret connection metadata and the acknowledged event cursor.
+
 ## Environment Selector
 
 The popup's **Advanced** section includes an **Environment** dropdown that lets you switch between `local`, `dev`, `staging`, and `production` without rebuilding the extension. This controls which cloud API and web URLs are used for sign-in, pairing, and relay connections.
@@ -74,20 +105,20 @@ The popup's **Advanced** section includes an **Environment** dropdown that lets 
 
 The effective environment is resolved in this order:
 
-| Priority | Source | Description |
-|---|---|---|
-| 1 (highest) | Popup override | Selected in the dropdown, persisted in `chrome.storage.local` |
-| 2 | Build-time default | Injected via `--define process.env.VELLUM_ENVIRONMENT=...` at bundle time |
-| 3 (fallback) | Hard-coded default | `dev` |
+| Priority     | Source             | Description                                                               |
+| ------------ | ------------------ | ------------------------------------------------------------------------- |
+| 1 (highest)  | Popup override     | Selected in the dropdown, persisted in `chrome.storage.local`             |
+| 2            | Build-time default | Injected via `--define process.env.VELLUM_ENVIRONMENT=...` at bundle time |
+| 3 (fallback) | Hard-coded default | `dev`                                                                     |
 
 ### Expected defaults by context
 
-| Context | Build default | Notes |
-|---|---|---|
-| Local dev build (`bash build.sh`) | `dev` | No `--define` injection; falls back to `dev` |
-| `vel up` (local assistant) | `dev` build / `local` override | Build defaults to `dev`; use the popup dropdown to select `local` to target `localhost` endpoints |
-| Staging release artifact | `staging` | Set by `release.yml` via `--define` |
-| Production release artifact (CWS) | `production` | Set by `release.yml` via `--define` |
+| Context                           | Build default                  | Notes                                                                                             |
+| --------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------- |
+| Local dev build (`bash build.sh`) | `dev`                          | No `--define` injection; falls back to `dev`                                                      |
+| `vel up` (local assistant)        | `dev` build / `local` override | Build defaults to `dev`; use the popup dropdown to select `local` to target `localhost` endpoints |
+| Staging release artifact          | `staging`                      | Set by `release.yml` via `--define`                                                               |
+| Production release artifact (CWS) | `production`                   | Set by `release.yml` via `--define`                                                               |
 
 ### Behavior on change
 
@@ -124,12 +155,12 @@ extension id is fixed per environment (deterministic `key` in
 [`extension-environments.json`](./extension-environments.json) for non-prod; the
 CWS signing key for production):
 
-| Environment | Extension ID | Redirect URI to register |
-|---|---|---|
-| production | `hphbdmpffeigpcdjkckleobjmhhokpne` | `https://hphbdmpffeigpcdjkckleobjmhhokpne.chromiumapp.org/cloud-auth` |
-| staging | `idpcnibfinmkdhlpenkglianflkbhfim` | `https://idpcnibfinmkdhlpenkglianflkbhfim.chromiumapp.org/cloud-auth` |
-| dev | `kajfcoaefacmjgdaloeafnpcfaeahcio` | `https://kajfcoaefacmjgdaloeafnpcfaeahcio.chromiumapp.org/cloud-auth` |
-| local | `gfcldmjjhcginboeldmknclbjilohcbn` | `https://gfcldmjjhcginboeldmknclbjilohcbn.chromiumapp.org/cloud-auth` |
+| Environment | Extension ID                       | Redirect URI to register                                              |
+| ----------- | ---------------------------------- | --------------------------------------------------------------------- |
+| production  | `hphbdmpffeigpcdjkckleobjmhhokpne` | `https://hphbdmpffeigpcdjkckleobjmhhokpne.chromiumapp.org/cloud-auth` |
+| staging     | `idpcnibfinmkdhlpenkglianflkbhfim` | `https://idpcnibfinmkdhlpenkglianflkbhfim.chromiumapp.org/cloud-auth` |
+| dev         | `kajfcoaefacmjgdaloeafnpcfaeahcio` | `https://kajfcoaefacmjgdaloeafnpcfaeahcio.chromiumapp.org/cloud-auth` |
+| local       | `gfcldmjjhcginboeldmknclbjilohcbn` | `https://gfcldmjjhcginboeldmknclbjilohcbn.chromiumapp.org/cloud-auth` |
 
 Register each redirect on the WorkOS UM app that backs the corresponding
 platform environment (production WorkOS app for `production`, etc.). The
@@ -138,11 +169,11 @@ update the production row above and re-register.
 
 ## Troubleshooting
 
-| Error | Cause / Fix |
-|---|---|
-| `failed to reach assistant at http://127.0.0.1:<port>/...` | Assistant not running, wrong port, or firewall blocking. |
-| `Automatic cloud sign-in failed` | Use "Re-sign in" in the popup's Troubleshooting section, then click Connect. |
-| `Automatic local pairing failed` | Use "Re-pair" in the popup's Troubleshooting section, then click Connect. |
+| Error                                                      | Cause / Fix                                                                  |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `failed to reach assistant at http://127.0.0.1:<port>/...` | Assistant not running, wrong port, or firewall blocking.                     |
+| `Automatic cloud sign-in failed`                           | Use "Re-sign in" in the popup's Troubleshooting section, then click Connect. |
+| `Automatic local pairing failed`                           | Use "Re-pair" in the popup's Troubleshooting section, then click Connect.    |
 
 ## Tests
 
@@ -154,4 +185,11 @@ bunx tsc --noEmit
 bun test background/__tests__/self-hosted-auth.test.ts
 bun test background/__tests__/worker-selected-assistant-connect.test.ts
 bun test background/__tests__/relay-connection.test.ts
+```
+
+The concurrent broker also requires the assistant contract and scoped runtime
+tests. Enable it in a local concurrent runtime only when testing this path:
+
+```text
+CONCURRENT_BROWSER_BROKER_ENABLED=true
 ```

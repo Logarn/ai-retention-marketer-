@@ -17,6 +17,8 @@ import {
   type ConcurrentAuthenticatedTenant,
   type ConcurrentAuthenticationResult,
 } from "./auth.js";
+import { createBrowserBrokerHttpHandler } from "./browser-broker/http-handler.js";
+import type { BrowserBrokerService } from "./browser-broker/service.js";
 import { ConcurrentRuntimeService } from "./service.js";
 import type { ConcurrentRuntimeStore } from "./store.js";
 import type { ConcurrentConversation } from "./types.js";
@@ -49,6 +51,7 @@ export interface ConcurrentRuntimeHttpHandlerOptions {
   logger?: ConcurrentHttpLogger;
   eventPollIntervalMs?: number;
   heartbeatIntervalMs?: number;
+  browserBrokerService?: BrowserBrokerService;
   authenticate?: (
     request: Request,
     requiredScope: Scope,
@@ -208,6 +211,16 @@ export function createConcurrentRuntimeHttpHandler(
     options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
   const authenticate =
     options.authenticate ?? authenticateConcurrentRuntimeRequest;
+  const browserBrokerHandler = options.browserBrokerService
+    ? createBrowserBrokerHttpHandler({
+        store: options.store,
+        service: options.browserBrokerService,
+        authenticate,
+        logger,
+        eventPollIntervalMs,
+        heartbeatIntervalMs,
+      })
+    : null;
 
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
@@ -222,8 +235,17 @@ export function createConcurrentRuntimeHttpHandler(
       return json({
         status: "ok",
         mode: "concurrent_service",
-        capabilities: ["interactive_chat", "conversation_history"],
+        capabilities: [
+          "interactive_chat",
+          "conversation_history",
+          ...(browserBrokerHandler ? ["browser_broker_v1"] : []),
+        ],
       });
+    }
+
+    if (browserBrokerHandler) {
+      const browserResponse = await browserBrokerHandler(request, pathname);
+      if (browserResponse) return browserResponse;
     }
 
     if (request.method === "GET" && pathname === "/v1/healthz") {
@@ -237,7 +259,7 @@ export function createConcurrentRuntimeHttpHandler(
         disk: null,
         memory: { currentMb: memoryMb, maxMb: memoryMb },
         cpu: { currentPercent: 0, maxCores: 1 },
-        migrations: { dbVersion: 1, lastWorkspaceMigrationId: null },
+        migrations: { dbVersion: 2, lastWorkspaceMigrationId: null },
         ces: { connected: false },
         capabilities: { memoryOptOut: true },
       });

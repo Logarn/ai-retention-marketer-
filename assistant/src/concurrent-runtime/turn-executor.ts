@@ -1,12 +1,23 @@
+import {
+  type BrowserBrokerOperation,
+  BrowserBrokerOperationSchema,
+} from "@vellumai/service-contracts/browser-broker";
 import type { TenantExecutionContext } from "@vellumai/service-contracts/tenant-context";
+import { z } from "zod";
 
 import { runWithConcurrentManagedProviderContext } from "../providers/platform-proxy/concurrent-request-context.js";
 import {
   extractAllText,
   getConfiguredProvider,
 } from "../providers/provider-send-message.js";
-import type { Message, ProviderEvent } from "../providers/types.js";
-import type { ConcurrentMessage } from "./types.js";
+import type {
+  ContentBlock,
+  Message,
+  ProviderEvent,
+  ToolDefinition,
+  ToolUseContent,
+} from "../providers/types.js";
+import type { ConcurrentMessage, ConcurrentRunStep } from "./types.js";
 
 export interface ConcurrentTurnCallbacks {
   onTextDelta(text: string): Promise<void>;
@@ -16,21 +27,56 @@ export interface ConcurrentTurnExecutor {
   execute(input: {
     context: TenantExecutionContext;
     messages: readonly ConcurrentMessage[];
+    steps: readonly ConcurrentRunStep[];
+    browserEnabled: boolean;
     signal: AbortSignal;
     callbacks: ConcurrentTurnCallbacks;
-  }): Promise<string>;
+  }): Promise<ConcurrentTurnExecution | string>;
 }
+
+export type ConcurrentTurnExecution =
+  | { kind: "complete"; content: string }
+  | {
+      kind: "browser_action";
+      toolUseId: string;
+      operation: BrowserBrokerOperation;
+      providerContent: ContentBlock[];
+      executionConfig: Record<string, unknown>;
+    };
 
 export interface ConfiguredProviderTurnExecutorOptions {
   systemPrompt: string;
 }
 
-function providerMessages(messages: readonly ConcurrentMessage[]): Message[] {
-  return messages.map((message) => ({
+function providerMessages(
+  messages: readonly ConcurrentMessage[],
+  steps: readonly ConcurrentRunStep[],
+): Message[] {
+  const history: Message[] = messages.map((message) => ({
     role: message.role,
     content: [{ type: "text", text: message.content }],
   }));
+  for (const step of steps) {
+    if (!Array.isArray(step.providerContent)) {
+      throw new Error("Persisted concurrent run step content is invalid.");
+    }
+    history.push({
+      role: step.stepKind === "provider_response" ? "assistant" : "user",
+      content: structuredClone(step.providerContent) as ContentBlock[],
+    });
+  }
+  return history;
 }
+
+const browserInputSchema = z.toJSONSchema(BrowserBrokerOperationSchema);
+delete browserInputSchema.$schema;
+
+export const CONCURRENT_BROWSER_TOOL: ToolDefinition = {
+  name: "browser_control",
+  description:
+    "Use the user's explicitly connected Chrome tab for bounded browser work. Open a session before interacting. Use snapshot element references for click, type, and selection. Never use it for passwords, one-time codes, payments, files, localhost, private networks, or browser settings.",
+  input_schema: browserInputSchema,
+};
 
 export class ConfiguredProviderTurnExecutor implements ConcurrentTurnExecutor {
   constructor(
@@ -40,9 +86,11 @@ export class ConfiguredProviderTurnExecutor implements ConcurrentTurnExecutor {
   async execute(input: {
     context: TenantExecutionContext;
     messages: readonly ConcurrentMessage[];
+    steps: readonly ConcurrentRunStep[];
+    browserEnabled: boolean;
     signal: AbortSignal;
     callbacks: ConcurrentTurnCallbacks;
-  }): Promise<string> {
+  }): Promise<ConcurrentTurnExecution> {
     return runWithConcurrentManagedProviderContext(input.context, async () => {
       const provider = await getConfiguredProvider("mainAgent", {
         selectionSeed: input.context.conversationId,
@@ -59,8 +107,9 @@ export class ConfiguredProviderTurnExecutor implements ConcurrentTurnExecutor {
         );
       };
       const response = await provider.sendMessage(
-        providerMessages(input.messages),
+        providerMessages(input.messages, input.steps),
         {
+          tools: input.browserEnabled ? [CONCURRENT_BROWSER_TOOL] : undefined,
           systemPrompt: this.options.systemPrompt,
           signal: input.signal,
           onEvent,
@@ -78,7 +127,33 @@ export class ConfiguredProviderTurnExecutor implements ConcurrentTurnExecutor {
         },
       );
       await callbackChain;
-      return extractAllText(response);
+      const browserCalls = response.content.filter(
+        (block): block is ToolUseContent =>
+          block.type === "tool_use" && block.name === "browser_control",
+      );
+      if (browserCalls.length > 1) {
+        throw new Error(
+          "Concurrent browser turns permit one action per model step.",
+        );
+      }
+      const browserCall = browserCalls[0];
+      if (browserCall) {
+        const operation = BrowserBrokerOperationSchema.parse(browserCall.input);
+        return {
+          kind: "browser_action",
+          toolUseId: browserCall.id,
+          operation,
+          providerContent: response.content,
+          executionConfig: {
+            providerModel: response.model,
+            ...(response.actualProvider
+              ? { actualProvider: response.actualProvider }
+              : {}),
+            browserToolSchemaVersion: 1,
+          },
+        };
+      }
+      return { kind: "complete", content: extractAllText(response) };
     });
   }
 }

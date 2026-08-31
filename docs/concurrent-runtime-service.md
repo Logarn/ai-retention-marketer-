@@ -15,10 +15,12 @@ assistant.
 ```mermaid
 flowchart LR
     Browser["Web or iOS client"] --> CP["Control plane"]
+    Extension["Chrome extension broker"] --> CP
     CP --> GW["Shared gateway"]
     GW --> Runtime["Concurrent runtime replicas"]
     Runtime --> PG["PostgreSQL with forced RLS"]
     Runtime --> LLM["Managed LLM provider"]
+    Runtime -. "semantic browser commands" .-> Extension
 ```
 
 The control plane remains the public API edge. It authenticates assistant
@@ -47,6 +49,9 @@ The first deployment slice supports:
 - `GET /v1/conversations` and `GET /v1/conversations/:id`;
 - `GET /v1/events` with durable replay and heartbeat frames;
 - `POST /v1/conversations/:id/cancel`;
+- opt-in Chrome extension browser broker routes under
+  `/v1/browser-broker/*` plus
+  `/v1/conversations/:id/browser-access` when the broker feature is enabled;
 - read-only web bootstrap endpoints for identity, authentication status,
   configuration, provider-connection status, pending interactions, home feed,
   and disk-pressure status;
@@ -67,8 +72,52 @@ implements.
 All other `/v1/*` routes return `requires_dedicated_runtime`. Attachments,
 onboarding bootstrap payloads, slash commands, personal provider credentials,
 custom model endpoints, workspace operations, memory, tools, schedules,
-channels, voice, host access, and long-lived local processes remain dedicated
-runtime capabilities.
+channels, voice, unrestricted host access, raw Chrome DevTools Protocol access,
+and long-lived local processes remain dedicated runtime capabilities.
+
+## Conversation-Scoped Browser Broker
+
+`CONCURRENT_BROWSER_BROKER_ENABLED=true` adds a bounded browser tool to the
+concurrent model loop. It is disabled by default and advertised in health
+capabilities only while enabled. `CONCURRENT_BROWSER_ALLOWED_ORIGINS` is a
+comma-separated list of canonical HTTPS origins such as
+`https://example.com`; navigation is denied when the origin is absent. A
+conversation must also have an explicit grant for one connected extension
+installation before the model receives the tool.
+
+Every connection, grant, session, command, receipt, and result carries the
+exact organization, assistant, user, actor, conversation, client, connection,
+and generation scope applicable to it. The server stores only a hash of the
+rotating connection credential. A resumed connection rotates that credential;
+a fresh connection supersedes the previous generation and invalidates its tab
+sessions. The event stream is independent of chat SSE and supports replay from
+its durable sequence cursor.
+
+The wire contract exposes reviewed semantic operations only: open or close the
+leased tab, navigate, snapshot, screenshot, click or type through current
+snapshot references, press an allowlisted key, scroll, select an option, wait,
+and query status. It never exposes browser tab identifiers, arbitrary
+JavaScript, raw CDP methods, cookies, credentials, downloads, uploads, browser
+settings, localhost, private-network targets, or non-HTTPS navigation.
+
+The extension opens a new tab rather than adopting an arbitrary existing tab.
+It maintains an opaque tab lease, document epoch, and short-lived element
+references. Password, payment, one-time-code, and similarly sensitive inputs
+are refused. Its action journal deduplicates replayed commands; a replayed
+non-idempotent action that was executing without a durable terminal result is
+reported as `unknown_outcome` instead of being guessed or repeated. The popup
+offers immediate human takeover and resume controls, clears snapshot leases on
+every ownership transition, and displays whether the agent or user owns the
+tab.
+
+Provider responses and browser results are persisted as ordered run steps.
+While an action is outstanding the run is parked as `waiting_for_browser`, so
+the worker lease is not held and later turns in that conversation remain
+ordered. A terminal browser result appends the matching tool result, returns
+the run to the queue, and resumes inference without relying on replica-local
+state. Run-step payloads and outbox bodies are deleted when the run reaches a
+terminal state; action rows retain hashes and coarse state while URL, typed
+input, page content, screenshots, and result bodies are redacted.
 
 ## Persistence And Isolation
 
@@ -76,7 +125,7 @@ runtime capabilities.
 PostgreSQL repository. `@vellumai/service-contracts/tenant-context` owns the
 versioned tenant claim and execution-context schemas.
 
-The initial append-only migration creates:
+The append-only migrations create:
 
 - tenant-scoped assistant, conversation, message, run, and event tables;
 - compound ownership primary/foreign keys;
@@ -85,6 +134,13 @@ The initial append-only migration creates:
 - run leases and fencing;
 - durable event sequence indexes;
 - enabled and forced row-level security on every tenant table.
+
+Migration 2 additionally writes immutable user/actor ownership onto new
+conversations and creates actor-scoped browser clients, connection
+generations, conversation grants, tab sessions, run steps, action journal, and
+outbox tables. Legacy conversations whose owner columns are null retain their
+existing assistant-scoped visibility; browser access cannot be granted until
+the conversation has an exact user/actor owner.
 
 Repository operations require an explicit `TenantExecutionContext`, set
 transaction-local PostgreSQL tenant settings, and include explicit
@@ -156,6 +212,8 @@ CONCURRENT_RUNTIME_MAX_CONCURRENT_TURNS=32
 CONCURRENT_RUNTIME_MAX_CONCURRENT_TURNS_PER_TENANT=2
 CONCURRENT_RUNTIME_LEASE_DURATION_MS=600000
 CONCURRENT_RUNTIME_EVENT_POLL_INTERVAL_MS=250
+CONCURRENT_BROWSER_BROKER_ENABLED=false
+CONCURRENT_BROWSER_ALLOWED_ORIGINS=https://example.com
 CONCURRENT_RUNTIME_PORT=3001
 CONCURRENT_RUNTIME_HOST=0.0.0.0
 ```

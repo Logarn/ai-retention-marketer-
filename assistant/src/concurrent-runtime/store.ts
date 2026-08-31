@@ -1,5 +1,6 @@
 import type { TenantExecutionContext } from "@vellumai/service-contracts/tenant-context";
 
+import type { ConcurrentBrowserBrokerStore } from "./browser-broker/types.js";
 import type {
   AcceptConcurrentMessageInput,
   AcceptedConcurrentRun,
@@ -12,7 +13,7 @@ import type {
   FailConcurrentRunInput,
 } from "./types.js";
 
-export interface ConcurrentRuntimeStore {
+export interface ConcurrentRuntimeStore extends ConcurrentBrowserBrokerStore {
   initialize(): Promise<void>;
 
   acceptMessage(
@@ -56,6 +57,11 @@ export interface ConcurrentRuntimeStore {
   getRun(
     context: TenantExecutionContext,
     runId: string,
+  ): Promise<ConcurrentRun | null>;
+
+  getNextQueuedRun(
+    context: TenantExecutionContext,
+    conversationId: string,
   ): Promise<ConcurrentRun | null>;
 
   listMessages(
@@ -102,6 +108,9 @@ export class ConcurrentRuntimeStoreError extends Error {
       | "conversation_not_found"
       | "run_not_found"
       | "lease_lost"
+      | "browser_access_denied"
+      | "stale_connection"
+      | "action_conflict"
       | "invalid_state",
   ) {
     super(message);

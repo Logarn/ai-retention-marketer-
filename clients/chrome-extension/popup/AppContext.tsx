@@ -3,7 +3,11 @@ import { createContext, useContext } from 'react';
 import type { AssistantAuthProfile } from '../background/assistant-auth-profile.js';
 import type { CloudAssistant } from '../background/cloud-api.js';
 import type { OperationEntry } from '../background/event-log.js';
-import type { ConnectionHealthDetail, ConnectionHealthState } from './popup-state.js';
+import type {
+  ConnectionHealthDetail,
+  ConnectionHealthState,
+  GetStatusResponse,
+} from './popup-state.js';
 
 export type Screen =
   | { name: 'welcome' }
@@ -18,6 +22,7 @@ export interface AppContextValue {
   health: ConnectionHealthState;
   healthDetail: ConnectionHealthDetail;
   authProfile: AssistantAuthProfile | null;
+  browserControl: GetStatusResponse['browserControl'];
   operationCount: number;
   selfHostedPaired: boolean;
   assistantsError: string | null;

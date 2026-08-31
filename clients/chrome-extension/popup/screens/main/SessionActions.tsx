@@ -13,14 +13,22 @@ export interface SessionActionsProps {
  * disconnect / back button depending on mode and paired state.
  */
 export function SessionActions({ paired, onBack }: SessionActionsProps) {
-  const { mode, health, onSignOut } = useAppContext();
+  const { mode, health, browserControl, onSignOut } = useAppContext();
 
   const isFailure =
-    health === 'error' || health === 'auth_required' || health === 'reconnecting';
+    health === 'error' ||
+    health === 'auth_required' ||
+    health === 'reconnecting';
 
   const handleReconnect = useCallback(() => {
     sendMessage({ type: 'connect' });
   }, []);
+
+  const toggleBrowserOwner = useCallback(() => {
+    void sendMessage({
+      type: browserControl === 'agent' ? 'browser-takeover' : 'browser-resume',
+    });
+  }, [browserControl]);
 
   // Determine the label and action for the bottom button
   let actionLabel: string;
@@ -39,6 +47,17 @@ export function SessionActions({ paired, onBack }: SessionActionsProps) {
 
   return (
     <div className="mt-auto flex flex-col items-center pt-1">
+      {browserControl !== 'inactive' && (
+        <button
+          type="button"
+          onClick={toggleBrowserOwner}
+          className="mb-2.5 w-full rounded-lg border border-edge bg-surface-alt px-3 py-2.5 text-xs font-medium text-fg transition-colors hover:border-edge-hover hover:bg-surface"
+        >
+          {browserControl === 'agent'
+            ? 'Take over browser'
+            : 'Resume assistant'}
+        </button>
+      )}
       {/* Reconnect button: only in self-hosted + failure state */}
       {mode === 'self-hosted' && isFailure && (
         <button

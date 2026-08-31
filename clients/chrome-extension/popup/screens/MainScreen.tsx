@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useAppContext } from '../AppContext.js';
 import { sendMessage } from '../lib/chrome-message.js';
 import { AssistantInfoBar } from './main/AssistantInfoBar.js';
+import { BrowserAccessControl } from './main/BrowserAccessControl.js';
 import { SelfHostedSettings } from './main/SelfHostedSettings.js';
 import { SessionActions } from './main/SessionActions.js';
 import { StatusCard } from './main/StatusCard.js';
@@ -12,7 +13,15 @@ import { StatusCard } from './main/StatusCard.js';
  * controls for cloud or self-hosted operation.
  */
 export function MainScreen() {
-  const { mode, operationCount, selfHostedPaired, assistantsError, setScreen, onSignOut, onRetryAssistants } = useAppContext();
+  const {
+    mode,
+    operationCount,
+    selfHostedPaired,
+    assistantsError,
+    setScreen,
+    onSignOut,
+    onRetryAssistants,
+  } = useAppContext();
 
   const [paired, setPaired] = useState(selfHostedPaired);
   const [assistantName, setAssistantName] = useState('');
@@ -82,6 +91,8 @@ export function MainScreen() {
       )}
 
       {showConnectedState && <StatusCard />}
+
+      {showConnectedState && <BrowserAccessControl />}
 
       {showConnectedState && (
         <button

@@ -4,6 +4,7 @@ export type ConcurrentMessageRole = "user" | "assistant";
 export type ConcurrentRunStatus =
   | "queued"
   | "processing"
+  | "waiting_for_browser"
   | "completed"
   | "failed"
   | "cancelled";
@@ -23,6 +24,8 @@ export interface ConcurrentConversation {
   id: string;
   organizationId: string;
   assistantId: string;
+  ownerUserId?: string;
+  ownerActorId?: string;
   title: string;
   createdAt: string;
   updatedAt: string;
@@ -38,6 +41,7 @@ export interface ConcurrentRun {
   requestId: string;
   idempotencyKey: string;
   userMessageId: string;
+  turnSequence: number;
   assistantMessageId?: string;
   status: ConcurrentRunStatus;
   errorCode?: string;
@@ -70,6 +74,18 @@ export interface ClaimedConcurrentRun {
   context: TenantExecutionContext;
   run: ConcurrentRun;
   messages: ConcurrentMessage[];
+  steps: ConcurrentRunStep[];
+}
+
+export interface ConcurrentRunStep {
+  runId: string;
+  conversationId: string;
+  stepIndex: number;
+  stepKind: "provider_response" | "tool_result";
+  providerContent: unknown;
+  toolUseId?: string;
+  executionConfig?: Record<string, unknown>;
+  createdAt: string;
 }
 
 export interface AcceptConcurrentMessageInput {

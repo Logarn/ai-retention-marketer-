@@ -46,11 +46,17 @@ export interface GetStatusResponse {
   authProfile: AssistantAuthProfile | null;
   health: ConnectionHealthState;
   healthDetail: ConnectionHealthDetail;
+  browserControl: 'inactive' | 'agent' | 'human';
 }
 
 // ── Connection phase & CTA helpers ──────────────────────────────────
 
-export type ConnectionPhase = 'disconnected' | 'connecting' | 'reconnecting' | 'connected' | 'paused';
+export type ConnectionPhase =
+  | 'disconnected'
+  | 'connecting'
+  | 'reconnecting'
+  | 'connected'
+  | 'paused';
 
 export interface StatusDisplay {
   dotClass: string;
@@ -83,10 +89,12 @@ export function healthToPhase(health: ConnectionHealthState): ConnectionPhase {
 }
 
 export function cleanErrorMessage(raw: string, fallback: string): string {
-  return raw
-    .replace(/\[trace=[^\]]+\]/g, '')
-    .replace(/(?:cloud\s+)?sign-in failed:\s*/gi, '')
-    .trim() || fallback;
+  return (
+    raw
+      .replace(/\[trace=[^\]]+\]/g, '')
+      .replace(/(?:cloud\s+)?sign-in failed:\s*/gi, '')
+      .trim() || fallback
+  );
 }
 
 export function deriveHealthStatusDisplay(
@@ -110,7 +118,10 @@ export function deriveHealthStatusDisplay(
           : 'Action required \u2014 check gateway URL and re-pair',
       };
     case 'assistant_gone':
-      return { dotClass: 'disconnected', text: 'Assistant no longer available' };
+      return {
+        dotClass: 'disconnected',
+        text: 'Assistant no longer available',
+      };
     case 'error': {
       let text = detail?.lastErrorMessage
         ? cleanErrorMessage(detail.lastErrorMessage, 'Connection error')
@@ -123,8 +134,14 @@ export function deriveHealthStatusDisplay(
 
 // ── Troubleshooting visibility ──────────────────────────────────────
 
-export function shouldExpandTroubleshooting(health: ConnectionHealthState): boolean {
-  return health === 'auth_required' || health === 'error' || health === 'assistant_gone';
+export function shouldExpandTroubleshooting(
+  health: ConnectionHealthState,
+): boolean {
+  return (
+    health === 'auth_required' ||
+    health === 'error' ||
+    health === 'assistant_gone'
+  );
 }
 
 export function hasTroubleshootingControls(

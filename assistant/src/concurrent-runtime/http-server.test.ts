@@ -11,6 +11,7 @@ import type {
   ConcurrentAuthenticatedTenant,
   ConcurrentAuthenticationResult,
 } from "./auth.js";
+import { BrowserBrokerService } from "./browser-broker/service.js";
 import { createConcurrentRuntimeHttpHandler } from "./http-server.js";
 import { InMemoryConcurrentRuntimeStore } from "./in-memory-store.js";
 import { ConcurrentRuntimeService } from "./service.js";
@@ -310,6 +311,86 @@ describe("concurrent runtime HTTP handler", () => {
       ok: true,
       cancelled: true,
       conversationId: "conversation-123",
+    });
+  });
+
+  test("exposes the browser broker only when configured and grants an exact client", async () => {
+    const store = new InMemoryConcurrentRuntimeStore();
+    const tenant = authenticatedTenant();
+    const serviceRef: { current?: ConcurrentRuntimeService } = {};
+    const browserBrokerService = new BrowserBrokerService({
+      store,
+      allowedOrigins: ["https://example.com"],
+      onRunRunnable: async (context, runId): Promise<void> => {
+        if (!serviceRef.current) throw new Error("Service is unavailable.");
+        await serviceRef.current.resumeRun(context, runId);
+      },
+    });
+    const service = new ConcurrentRuntimeService({
+      store,
+      executor: new EchoExecutor(),
+      browserBrokerService,
+      maxConcurrentTurns: 2,
+      maxConcurrentTurnsPerTenant: 1,
+      leaseDurationMs: 30_000,
+    });
+    serviceRef.current = service;
+    await service.initialize();
+    const handler = createConcurrentRuntimeHttpHandler({
+      store,
+      service,
+      browserBrokerService,
+      authenticate: () => ({ ok: true, tenant }),
+    });
+
+    const health = await handler(new Request("http://runtime.test/health"));
+    expect(await health.json()).toMatchObject({
+      capabilities: expect.arrayContaining(["browser_broker_v1"]),
+    });
+    const connection = await handler(
+      new Request("http://runtime.test/v1/browser-broker/connections", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          protocolVersion: 1,
+          interfaceId: "chrome-extension",
+          clientInstallationId: "client-123",
+          capabilities: ["browser_broker_v1", "interaction_v1"],
+        }),
+      }),
+    );
+    expect(connection.status).toBe(201);
+    await handler(
+      new Request("http://runtime.test/v1/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          conversationId: "conversation-browser",
+          content: "hello",
+        }),
+      }),
+    );
+    await service.onIdle();
+    const grant = await handler(
+      new Request(
+        "http://runtime.test/v1/conversations/conversation-browser/browser-access",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            clientInstallationId: "client-123",
+            enabled: true,
+          }),
+        },
+      ),
+    );
+    expect(grant.status).toBe(200);
+    expect(await grant.json()).toMatchObject({
+      grant: {
+        conversationId: "conversation-browser",
+        clientInstallationId: "client-123",
+        enabled: true,
+      },
     });
   });
 });

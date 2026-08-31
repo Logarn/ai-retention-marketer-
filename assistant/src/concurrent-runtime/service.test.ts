@@ -1,18 +1,26 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  BROWSER_BROKER_INTERFACE_ID,
+  BROWSER_BROKER_PROTOCOL_VERSION,
+} from "@vellumai/service-contracts/browser-broker";
+import {
   createTenantExecutionContext,
   type RuntimeTenantContextClaim,
   type TenantExecutionContext,
 } from "@vellumai/service-contracts/tenant-context";
 
+import {
+  BrowserBrokerService,
+  hashBrowserConnectionToken,
+} from "./browser-broker/service.js";
 import { InMemoryConcurrentRuntimeStore } from "./in-memory-store.js";
 import { ConcurrentRuntimeService } from "./service.js";
 import type {
   ConcurrentTurnCallbacks,
   ConcurrentTurnExecutor,
 } from "./turn-executor.js";
-import type { ConcurrentMessage } from "./types.js";
+import type { ConcurrentMessage, ConcurrentRunStep } from "./types.js";
 
 class RecordingExecutor implements ConcurrentTurnExecutor {
   readonly calls: Array<{
@@ -35,6 +43,41 @@ class RecordingExecutor implements ConcurrentTurnExecutor {
     const response = `reply:${latest}`;
     await input.callbacks.onTextDelta(response);
     return response;
+  }
+}
+
+class BrowserTurnExecutor implements ConcurrentTurnExecutor {
+  readonly stepCounts: number[] = [];
+
+  async execute(input: {
+    steps: readonly ConcurrentRunStep[];
+    browserEnabled: boolean;
+  }) {
+    this.stepCounts.push(input.steps.length);
+    expect(input.browserEnabled).toBe(true);
+    if (input.steps.length === 0) {
+      return {
+        kind: "browser_action" as const,
+        toolUseId: "tool-123",
+        operation: {
+          kind: "open_session" as const,
+          initialUrl: "https://example.com",
+        },
+        providerContent: [
+          {
+            type: "tool_use" as const,
+            id: "tool-123",
+            name: "browser_control",
+            input: {
+              kind: "open_session",
+              initialUrl: "https://example.com",
+            },
+          },
+        ],
+        executionConfig: { providerModel: "test-model" },
+      };
+    }
+    return { kind: "complete" as const, content: "Browser session opened." };
   }
 }
 
@@ -277,5 +320,105 @@ describe("ConcurrentRuntimeService", () => {
     expect((await store.getRun(context, accepted.run.id))?.status).toBe(
       "completed",
     );
+  });
+
+  test("parks a browser tool call and resumes it from durable run steps", async () => {
+    const store = new InMemoryConcurrentRuntimeStore();
+    const executor = new BrowserTurnExecutor();
+    const serviceRef: { current?: ConcurrentRuntimeService } = {};
+    const broker = new BrowserBrokerService({
+      store,
+      allowedOrigins: ["https://example.com"],
+      onRunRunnable: async (context, runId): Promise<void> => {
+        if (!serviceRef.current) throw new Error("Service is unavailable.");
+        await serviceRef.current.resumeRun(context, runId);
+      },
+    });
+    const service = new ConcurrentRuntimeService({
+      store,
+      executor,
+      browserBrokerService: broker,
+      maxConcurrentTurns: 2,
+      maxConcurrentTurnsPerTenant: 1,
+      leaseDurationMs: 30_000,
+    });
+    serviceRef.current = service;
+    await service.initialize();
+    const context = executionContext({
+      organizationId: "org-a",
+      assistantId: "assistant-a",
+      requestId: "request-browser",
+      conversationId: "conv-browser",
+      idempotencyKey: "message-browser",
+    });
+    const connection = await broker.connect(context, {
+      protocolVersion: BROWSER_BROKER_PROTOCOL_VERSION,
+      interfaceId: BROWSER_BROKER_INTERFACE_ID,
+      clientInstallationId: "client-123",
+      capabilities: ["browser_broker_v1", "interaction_v1"],
+    });
+    const accepted = await store.acceptMessage(context, {
+      conversationId: "conv-browser",
+      content: "Open the browser",
+      clientMessageId: "message-browser",
+    });
+    await store.setBrowserAccessGrant(context, {
+      conversationId: "conv-browser",
+      clientInstallationId: "client-123",
+      enabled: true,
+    });
+
+    await service.submitMessage(context, {
+      conversationId: "conv-browser",
+      content: "Open the browser",
+      clientMessageId: "message-browser",
+    });
+    await service.onIdle();
+    expect((await store.getRun(context, accepted.run.id))?.status).toBe(
+      "waiting_for_browser",
+    );
+
+    const [event] = await store.listBrowserEvents(context, {
+      clientInstallationId: "client-123",
+      connectionId: connection.connectionId,
+      connectionGeneration: connection.connectionGeneration,
+      connectionTokenHash: hashBrowserConnectionToken(connection.resumeToken),
+      afterSeq: 0,
+      limit: 10,
+    });
+    expect(event).toBeDefined();
+    if (!event || event.event.type !== "browser_broker_command") {
+      throw new Error("Expected a browser command event.");
+    }
+    await broker.recordResult(
+      context,
+      {
+        protocolVersion: BROWSER_BROKER_PROTOCOL_VERSION,
+        actionId: event.event.actionId,
+        operationHash: event.event.operationHash,
+        connectionId: connection.connectionId,
+        connectionGeneration: connection.connectionGeneration,
+        resultHash: "c".repeat(64),
+        state: "succeeded",
+        output: {
+          kind: "session",
+          browserSessionId: "session-123",
+          tabLeaseId: "lease-123",
+          documentEpoch: 0,
+        },
+      },
+      connection.resumeToken,
+    );
+    await service.onIdle();
+
+    expect(executor.stepCounts).toEqual([0, 2]);
+    expect((await store.getRun(context, accepted.run.id))?.status).toBe(
+      "completed",
+    );
+    expect(
+      (await store.listMessages(context, "conv-browser")).map(
+        (message) => message.content,
+      ),
+    ).toEqual(["Open the browser", "Browser session opened."]);
   });
 });

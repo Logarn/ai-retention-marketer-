@@ -14,6 +14,7 @@ interface StatusPollState {
   health: ConnectionHealthState;
   healthDetail: ConnectionHealthDetail;
   authProfile: AssistantAuthProfile | null;
+  browserControl: GetStatusResponse['browserControl'];
 }
 
 export function useStatusPoll(enabled: boolean): StatusPollState {
@@ -21,29 +22,35 @@ export function useStatusPoll(enabled: boolean): StatusPollState {
     health: 'paused',
     healthDetail: { lastChangeAt: 0 },
     authProfile: null,
+    browserControl: 'inactive',
   });
 
   useEffect(() => {
     if (!enabled) return;
 
     function poll() {
-      sendMessage<GetStatusResponse>({ type: 'get_status' }).then((response) => {
-        if (!response) return;
-        setState((prev) => {
-          if (
-            prev.health === response.health &&
-            prev.authProfile === response.authProfile &&
-            prev.healthDetail.lastChangeAt === response.healthDetail.lastChangeAt
-          ) {
-            return prev;
-          }
-          return {
-            health: response.health,
-            healthDetail: response.healthDetail,
-            authProfile: response.authProfile,
-          };
-        });
-      });
+      sendMessage<GetStatusResponse>({ type: 'get_status' }).then(
+        (response) => {
+          if (!response) return;
+          setState((prev) => {
+            if (
+              prev.health === response.health &&
+              prev.authProfile === response.authProfile &&
+              prev.browserControl === response.browserControl &&
+              prev.healthDetail.lastChangeAt ===
+                response.healthDetail.lastChangeAt
+            ) {
+              return prev;
+            }
+            return {
+              health: response.health,
+              healthDetail: response.healthDetail,
+              authProfile: response.authProfile,
+              browserControl: response.browserControl,
+            };
+          });
+        },
+      );
     }
 
     poll();

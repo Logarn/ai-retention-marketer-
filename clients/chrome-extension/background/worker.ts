@@ -41,7 +41,16 @@ import {
 } from "./host-browser-dispatcher.js";
 import { SseConnection, type SseMode } from "./sse-connection.js";
 import { fetchAssistants } from "./cloud-api.js";
-import { appendEvent, clearEventLog, getEventLog, getOperations, getOperationById, recordCallbackFailure, recordRequest, recordResponse } from "./event-log.js";
+import {
+  appendEvent,
+  clearEventLog,
+  getEventLog,
+  getOperations,
+  getOperationById,
+  recordCallbackFailure,
+  recordRequest,
+  recordResponse,
+} from "./event-log.js";
 import { getClientId } from "./client-identity.js";
 import {
   startCloudLogin,
@@ -57,6 +66,12 @@ import {
   submitFeedback,
   type FeedbackFormData,
 } from "./feedback.js";
+import { BrowserBrokerClient } from "./browser-broker-client.js";
+import { resolveBrowserAccessContext } from "./browser-access-context.js";
+import {
+  createConcurrentBrowserDispatcher,
+  type ConcurrentBrowserDispatcher,
+} from "./concurrent-browser-dispatcher.js";
 
 // ── Environment resolution ──────────────────────────────────────────
 //
@@ -316,6 +331,9 @@ function setConnectionHealth(
 let currentAuthProfile: AssistantAuthProfile | null = null;
 
 let sseConnection: SseConnection | null = null;
+let browserBrokerClient: BrowserBrokerClient | null = null;
+let concurrentBrowserDispatcher: ConcurrentBrowserDispatcher | null = null;
+let browserControlState: "inactive" | "agent" | "human" = "inactive";
 /** JWT obtained from POST /v1/pair during self-hosted connect. Used as Bearer on callback POSTs. */
 let selfHostedPairToken: string | null = null;
 let shouldConnect = false;
@@ -456,7 +474,11 @@ async function dispatchHostBrowserResult(
       );
       if (!resp.ok) {
         const body = await safeReadBody(resp);
-        recordCallbackFailure(result.requestId, resp.status, `fallback: ${body}`);
+        recordCallbackFailure(
+          result.requestId,
+          resp.status,
+          `fallback: ${body}`,
+        );
         console.warn(
           "[vellum] host-browser-result fallback POST failed",
           resp.status,
@@ -466,7 +488,11 @@ async function dispatchHostBrowserResult(
       return;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      recordCallbackFailure(result.requestId, 0, `fallback fetch threw: ${msg}`);
+      recordCallbackFailure(
+        result.requestId,
+        0,
+        `fallback fetch threw: ${msg}`,
+      );
       console.warn("[vellum] host-browser-result fallback POST threw", err);
       return;
     }
@@ -512,7 +538,9 @@ function dispatchHostBrowserEvent(envelope: HostBrowserEventEnvelope): void {
     mode.kind === "self-hosted"
       ? `${baseUrl}/v1/host-browser-event`
       : `${baseUrl}/v1/assistants/${encodeURIComponent(mode.assistantId)}/host-browser-event`;
-  const headers: Record<string, string> = { "content-type": "application/json" };
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+  };
   if (mode.kind === "vellum-cloud") {
     if (mode.token) {
       headers["authorization"] = `Bearer ${mode.token}`;
@@ -529,7 +557,9 @@ function dispatchHostBrowserEvent(envelope: HostBrowserEventEnvelope): void {
         headers,
         body: JSON.stringify(envelope),
         credentials: "include",
-      }).catch(() => { /* fire and forget */ });
+      }).catch(() => {
+        /* fire and forget */
+      });
     });
     return;
   } else if (selfHostedPairToken) {
@@ -559,7 +589,9 @@ function dispatchHostBrowserSessionInvalidated(
     mode.kind === "self-hosted"
       ? `${baseUrl}/v1/host-browser-session-invalidated`
       : `${baseUrl}/v1/assistants/${encodeURIComponent(mode.assistantId)}/host-browser-session-invalidated`;
-  const headers: Record<string, string> = { "content-type": "application/json" };
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+  };
   if (mode.kind === "vellum-cloud") {
     if (mode.token) {
       headers["authorization"] = `Bearer ${mode.token}`;
@@ -576,7 +608,9 @@ function dispatchHostBrowserSessionInvalidated(
         headers,
         body: JSON.stringify(envelope),
         credentials: "include",
-      }).catch(() => { /* fire and forget */ });
+      }).catch(() => {
+        /* fire and forget */
+      });
     });
     return;
   } else if (selfHostedPairToken) {
@@ -601,13 +635,13 @@ const hostBrowserDispatcher: HostBrowserDispatcher =
         lastFocusedWindow: true,
       });
       const newTab = await chrome.tabs.create({
-        url: 'about:blank',
+        url: "about:blank",
         active: true,
         windowId: activeTab?.windowId,
       });
       if (newTab.id === undefined) {
         throw new Error(
-          'Failed to create a new tab for navigation (active tab was on a privileged URL)',
+          "Failed to create a new tab for navigation (active tab was on a privileged URL)",
         );
       }
       return { tabId: newTab.id };
@@ -670,6 +704,7 @@ function createSseConnection(mode: SseMode): SseConnection {
       console.log(`[vellum-sse] Connected (${label})`);
       setConnectionHealth("connected");
       void clearRelayAuthError();
+      startBrowserBroker(mode);
     },
     onMessage: (data) => {
       void handleSseMessage(data).catch((err) => {
@@ -706,6 +741,106 @@ function createSseConnection(mode: SseMode): SseConnection {
       void handleAssistantGone();
     },
   });
+}
+
+function startBrowserBroker(mode: SseMode): void {
+  if (browserBrokerClient) return;
+  const dispatcher = createConcurrentBrowserDispatcher({
+    postReceipt: (receipt) => client.postReceipt(receipt),
+    postResult: (result) => client.postResult(result),
+    onSessionStateChange: (state) => {
+      browserControlState = state;
+    },
+  });
+  const client = new BrowserBrokerClient({
+    mode,
+    onCommand: (command, sequence) => dispatcher.handle(command, sequence),
+    onUnavailable: (reason) => {
+      console.info("[vellum-browser-broker] unavailable", reason);
+    },
+  });
+  concurrentBrowserDispatcher = dispatcher;
+  browserBrokerClient = client;
+  client.start();
+}
+
+function stopBrowserBroker(): void {
+  browserBrokerClient?.stop();
+  browserBrokerClient = null;
+  concurrentBrowserDispatcher?.dispose();
+  concurrentBrowserDispatcher = null;
+  browserControlState = "inactive";
+  void chrome.action.setBadgeText({ text: "" });
+}
+
+interface CurrentConversationBrowserAccess {
+  ok: boolean;
+  available?: boolean;
+  conversationId?: string;
+  enabled?: boolean;
+  selectedThisInstallation?: boolean;
+  reason?: string;
+  error?: string;
+}
+
+async function currentConversationBrowserAccess(): Promise<CurrentConversationBrowserAccess> {
+  if (!browserBrokerClient) {
+    return {
+      ok: false,
+      error: "Browser control is not connected to this assistant.",
+    };
+  }
+  const [activeTab] = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true,
+  });
+  const context = resolveBrowserAccessContext(
+    activeTab?.url,
+    await getEffectiveEnvironment(),
+  );
+  if (!context.available) {
+    return { ok: true, available: false, reason: context.reason };
+  }
+  const [grant, clientInstallationId] = await Promise.all([
+    browserBrokerClient.getConversationAccess(context.conversationId),
+    getClientId(),
+  ]);
+  return {
+    ok: true,
+    available: true,
+    conversationId: context.conversationId,
+    enabled: grant?.enabled === true,
+    selectedThisInstallation:
+      grant?.enabled === true &&
+      grant.clientInstallationId === clientInstallationId,
+  };
+}
+
+async function updateCurrentConversationBrowserAccess(
+  enabled: boolean,
+): Promise<CurrentConversationBrowserAccess> {
+  if (!browserBrokerClient) {
+    return {
+      ok: false,
+      error: "Browser control is not connected to this assistant.",
+    };
+  }
+  const [activeTab] = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true,
+  });
+  const context = resolveBrowserAccessContext(
+    activeTab?.url,
+    await getEffectiveEnvironment(),
+  );
+  if (!context.available) {
+    return { ok: true, available: false, reason: context.reason };
+  }
+  await browserBrokerClient.setConversationAccess(
+    context.conversationId,
+    enabled,
+  );
+  return currentConversationBrowserAccess();
 }
 
 /**
@@ -857,9 +992,7 @@ async function connect(
  * Helper: is the SSE connection currently open?
  */
 function isAnyConnectionOpen(): boolean {
-  return (
-    sseConnection !== null && sseConnection.isOpen()
-  );
+  return sseConnection !== null && sseConnection.isOpen();
 }
 
 async function doConnect(_options: ConnectOptions): Promise<void> {
@@ -913,16 +1046,13 @@ async function doConnect(_options: ConnectOptions): Promise<void> {
     // in ATL-429). The worker will surface the auth error and stop reconnecting
     // until the user re-pairs.
     try {
-      const pairResp = await fetch(
-        `${gatewayUrl.replace(/\/$/, "")}/v1/pair`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-vellum-interface-id": "chrome-extension",
-          },
+      const pairResp = await fetch(`${gatewayUrl.replace(/\/$/, "")}/v1/pair`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-vellum-interface-id": "chrome-extension",
         },
-      );
+      });
       if (pairResp.ok) {
         const body = (await pairResp.json()) as { token?: string };
         selfHostedPairToken = body.token ?? null;
@@ -949,6 +1079,7 @@ async function doConnect(_options: ConnectOptions): Promise<void> {
  * a new connection.
  */
 function teardownConnections(): void {
+  stopBrowserBroker();
   if (sseConnection) {
     sseConnection.close();
     sseConnection = null;
@@ -957,6 +1088,7 @@ function teardownConnections(): void {
 }
 
 function disconnect(): void {
+  stopBrowserBroker();
   if (sseConnection) {
     sseConnection.close();
     sseConnection = null;
@@ -1006,9 +1138,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
       /* best effort */
     }
     const envelope: HostBrowserSessionInvalidatedEnvelope = {
-      type: 'host_browser_session_invalidated',
+      type: "host_browser_session_invalidated",
       targetId: String(tabId),
-      reason: 'tab_closed',
+      reason: "tab_closed",
       ...(clientId ? { clientId } : {}),
     };
     dispatchHostBrowserSessionInvalidated(envelope);
@@ -1110,8 +1242,53 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponseFn) => {
       authProfile: currentAuthProfile,
       health: connectionHealth,
       healthDetail: connectionHealthDetail,
+      browserControl: browserControlState,
     });
     return false;
+  }
+  if (
+    message.type === "browser-takeover" ||
+    message.type === "browser-resume"
+  ) {
+    const humanOwned = message.type === "browser-takeover";
+    concurrentBrowserDispatcher
+      ?.setHumanOwner(null, humanOwned)
+      .then(() => sendResponseFn({ ok: true }))
+      .catch((err) =>
+        sendResponseFn({
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    if (!concurrentBrowserDispatcher)
+      sendResponseFn({ ok: false, error: "No active browser session." });
+    return true;
+  }
+  if (message.type === "browser-access-current-get") {
+    currentConversationBrowserAccess()
+      .then(sendResponseFn)
+      .catch((err) =>
+        sendResponseFn({
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    return true;
+  }
+  if (message.type === "browser-access-current-set") {
+    if (typeof message.enabled !== "boolean") {
+      sendResponseFn({ ok: false, error: "enabled must be a boolean." });
+      return false;
+    }
+    updateCurrentConversationBrowserAccess(message.enabled)
+      .then(sendResponseFn)
+      .catch((err) =>
+        sendResponseFn({
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    return true;
   }
   if (message.type === "gateway-url-get") {
     getStoredGatewayUrl()
@@ -1174,29 +1351,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponseFn) => {
     (async () => {
       const gatewayUrl = await getStoredGatewayUrl();
       await setStoredUserMode("self-hosted");
-      const pairResp = await fetch(
-        `${gatewayUrl.replace(/\/$/, "")}/v1/pair`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-vellum-interface-id": "chrome-extension",
-          },
+      const pairResp = await fetch(`${gatewayUrl.replace(/\/$/, "")}/v1/pair`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-vellum-interface-id": "chrome-extension",
         },
-      );
+      });
       if (!pairResp.ok) {
         throw new Error(`Pair failed (${pairResp.status})`);
       }
       const body = (await pairResp.json()) as { token?: string };
       selfHostedPairToken = body.token ?? null;
       sendResponseFn({ ok: true });
-    })()
-      .catch((err) =>
-        sendResponseFn({
-          ok: false,
-          error: err instanceof Error ? err.message : String(err),
-        }),
-      );
+    })().catch((err) =>
+      sendResponseFn({
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
     return true; // async
   }
   if (message.type === "environment-get") {
@@ -1460,7 +1633,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponseFn) => {
   if (message.type === "submit-feedback") {
     (async () => {
       const form = message.form as FeedbackFormData | undefined;
-      if (!form || typeof form.message !== "string" || form.message.trim().length === 0) {
+      if (
+        !form ||
+        typeof form.message !== "string" ||
+        form.message.trim().length === 0
+      ) {
         sendResponseFn({ ok: false, error: "Message is required" });
         return;
       }
@@ -1471,7 +1648,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponseFn) => {
             env,
             mode,
             sseState: connectionHealth,
-            sseDetail: connectionHealthDetail as unknown as Record<string, unknown>,
+            sseDetail: connectionHealthDetail as unknown as Record<
+              string,
+              unknown
+            >,
           })
         : null;
       await submitFeedback(form, bundle, env);
